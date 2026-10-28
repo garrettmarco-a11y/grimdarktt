@@ -68,6 +68,14 @@ func _play_phase(tm: TurnManager, p1_count: int, p2_count: int) -> Array:
     return actors
 
 
+
+## Plays out the rest of the current game turn with one activation each.
+func _finish_turn(tm: TurnManager) -> void:
+    var turn := tm.turn_number
+    while tm.turn_number == turn:
+        _play_phase(tm, 1, 1)
+
+
 func test_initial_state() -> void:
     var tm := _new_game()
     _check_eq(tm.current_phase, Phase.MOVEMENT, "initial phase")
@@ -101,8 +109,19 @@ func test_priority_to_player_with_more_activations() -> void:
     tm.phase_started.connect(func(_phase, _turn, priority): started.append(priority))
     _check_eq(_play_phase(tm, 2, 3), [P2, P1, P2, P1, P2], "actors with 2 vs 3")
     _check_eq(started, [P2], "priority reported by phase_started")
-    _check_eq(_play_phase(tm, 4, 1), [P1, P2, P1, P1, P1], "actors with 4 vs 1")
-    _check_eq(tm.priority_player, P1, "priority after 4 vs 1")
+    tm.free()
+
+
+func test_priority_set_at_turn_start_and_held_for_turn() -> void:
+    var tm := _new_game()
+    _check_eq(_play_phase(tm, 1, 3), [P2, P1, P2, P2], "Movement 1 vs 3")
+    _check_eq(_play_phase(tm, 3, 1), [P2, P1, P1, P1], "Shooting keeps Player 2 priority")
+    _check_eq(_play_phase(tm, 4, 2), [P2, P1, P2, P1, P1, P1], "Assault keeps Player 2 priority")
+    _check_eq(_play_phase(tm, 2, 0), [P1, P1], "Morale: priority holder with no tests is skipped")
+    _check_eq(tm.priority_player, P2, "priority held through Morale")
+    _check_eq(tm.turn_number, 2, "turn advanced")
+    _check_eq(_play_phase(tm, 3, 1), [P1, P2, P1, P1], "next turn's Movement recalculates")
+    _check_eq(tm.priority_player, P1, "priority after next turn's Movement")
     tm.free()
 
 
@@ -110,8 +129,10 @@ func test_tie_retains_previous_priority() -> void:
     var tm := _new_game()
     _play_phase(tm, 2, 2)
     _check_eq(tm.priority_player, P1, "tie at game start keeps Player 1")
+    _finish_turn(tm)
     _play_phase(tm, 1, 2)
     _check_eq(tm.priority_player, P2, "Player 2 gains priority with more activations")
+    _finish_turn(tm)
     _check_eq(_play_phase(tm, 2, 2), [P2, P1, P2, P1], "tie keeps Player 2 acting first")
     _check_eq(tm.priority_player, P2, "priority after tie")
     tm.free()
@@ -120,7 +141,7 @@ func test_tie_retains_previous_priority() -> void:
 func test_skips_player_with_no_remaining_activations() -> void:
     var tm := _new_game()
     _check_eq(_play_phase(tm, 0, 2), [P2, P2], "Player 1 has none")
-    _check_eq(_play_phase(tm, 3, 1), [P1, P2, P1, P1], "Player 2 runs out mid-phase")
+    _check_eq(_play_phase(tm, 1, 3), [P2, P1, P2, P2], "Player 1 runs out mid-phase")
     tm.free()
 
 
@@ -163,6 +184,55 @@ func test_activation_is_per_squad_and_guarded() -> void:
     tm.start_activation()
     _check_eq(tm.start_activation(), TurnManager.NO_PLAYER, "second concurrent activation rejected")
     _check(not tm.begin_phase(1, 1), "begin_phase rejected mid-phase")
+    tm.free()
+
+
+func test_remove_waiting_squad_from_other_player() -> void:
+    var tm := _new_game()
+    tm.begin_phase(2, 2)
+    _check(tm.remove_squad_activation(P2), "removal accepted")
+    _check_eq(tm.get_remaining_activations(P2), 1, "count reduced immediately")
+    var actors := []
+    while tm.state == TurnManager.State.IN_PHASE:
+        actors.append(tm.start_activation())
+        tm.end_activation()
+    _check_eq(actors, [P1, P2, P1], "play continues with reduced count")
+    tm.free()
+
+
+func test_removal_passes_play_when_next_player_runs_out() -> void:
+    var tm := _new_game()
+    tm.begin_phase(1, 1)
+    _check(tm.remove_squad_activation(P1), "removal accepted")
+    _check_eq(tm.active_player, P2, "play passes to Player 2")
+    tm.free()
+
+
+func test_removal_ends_phase_when_both_run_out() -> void:
+    var tm := _new_game()
+    var ended := []
+    tm.phase_ended.connect(func(phase, _turn): ended.append(phase))
+    tm.begin_phase(1, 1)
+    tm.start_activation()
+    tm.end_activation()
+    _check(tm.remove_squad_activation(P2), "removal accepted")
+    _check_eq(ended, [Phase.MOVEMENT], "phase ended")
+    _check_eq(tm.current_phase, Phase.SHOOTING, "next phase reached")
+    tm.free()
+
+
+func test_removal_during_activation() -> void:
+    var tm := _new_game()
+    tm.begin_phase(2, 1)
+    tm.start_activation()
+    _check(tm.remove_squad_activation(P2), "opponent's waiting squad removed mid-activation")
+    _check(tm.remove_squad_activation(P1), "own waiting squad removed mid-activation")
+    _check_eq(tm.active_player, P1, "acting squad's activation still in progress")
+    print("        (the next 2 errors are expected)")
+    _check(not tm.remove_squad_activation(P1), "acting squad cannot be removed")
+    _check(not tm.remove_squad_activation(P2), "player with no squads left cannot lose one")
+    tm.end_activation()
+    _check_eq(tm.current_phase, Phase.SHOOTING, "phase ends with the acting squad's activation")
     tm.free()
 
 
@@ -218,5 +288,10 @@ func test_main_scene_wiring() -> void:
     _check(label != null, "PhaseBanner label exists")
     if label:
         _check_eq(label.text, "Turn 1 - Movement", "banner text")
+    var tm := main.get_node("TurnManager") as TurnManager
+    for i in 4:
+        _play_phase(tm, 1, 1)
+    if label:
+        _check_eq(label.text, "Turn 2 - Movement", "banner text after a full turn")
     main.queue_free()
     await process_frame

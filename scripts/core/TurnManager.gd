@@ -8,12 +8,18 @@ class_name TurnManager
 ##   start_activation() / end_activation(), repeated until both players reach 0
 ##   the phase then ends and the manager waits for the next begin_phase() call.
 ##
-## Assumptions (approved by the project lead):
-##   - A phase ends when both players have 0 remaining activations.
+## Rules (approved by the project lead):
+##   - Priority is set once per game turn, at the start of the Movement phase:
+##     the player with more activations gets it, a tie keeps the previous
+##     priority. It then holds for Shooting, Assault and Morale.
 ##   - Eligible activation counts are supplied by the caller at each phase start;
 ##     the manager does not decide which squads are eligible.
-##   - Within a phase activations alternate, starting with the priority player;
-##     a player with 0 remaining activations is skipped.
+##   - Within every phase, Morale included, activations alternate starting with
+##     the priority player; a player with 0 remaining activations is skipped.
+##   - A squad lost mid-phase is removed with remove_squad_activation(). The
+##     squad currently activating is never removed this way; its activation
+##     simply ends with end_activation().
+##   - A phase ends when both players have 0 remaining activations.
 
 signal phase_changed(phase: Phase, turn: int)
 signal phase_started(phase: Phase, turn: int, priority_player: int)
@@ -68,8 +74,9 @@ func start_game() -> void:
 
 
 ## Starts the current phase with each player's eligible squad activations.
-## Priority goes to the player with more activations; a tie keeps the previous
-## priority. If neither player has an activation, the phase ends immediately.
+## In the Movement phase, priority goes to the player with more activations and a
+## tie keeps the previous priority; later phases keep that turn's priority.
+## If neither player has an activation, the phase ends immediately.
 func begin_phase(player_one_activations: int, player_two_activations: int) -> bool:
     if state != State.AWAITING_PHASE_START:
         push_error("TurnManager.begin_phase: not awaiting a phase start")
@@ -80,10 +87,11 @@ func begin_phase(player_one_activations: int, player_two_activations: int) -> bo
 
     _remaining[PLAYER_ONE] = player_one_activations
     _remaining[PLAYER_TWO] = player_two_activations
-    if player_one_activations > player_two_activations:
-        priority_player = PLAYER_ONE
-    elif player_two_activations > player_one_activations:
-        priority_player = PLAYER_TWO
+    if current_phase == Phase.MOVEMENT:
+        if player_one_activations > player_two_activations:
+            priority_player = PLAYER_ONE
+        elif player_two_activations > player_one_activations:
+            priority_player = PLAYER_TWO
 
     state = State.IN_PHASE
     phase_started.emit(current_phase, turn_number, priority_player)
@@ -125,6 +133,34 @@ func end_activation() -> bool:
         active_player = player
     else:
         _end_phase()
+    return true
+
+
+## Removes one not-yet-activated squad of `player` from the current phase, e.g.
+## when it is destroyed. If the player due to act runs out, play passes to the
+## opponent; if both run out, the phase ends.
+func remove_squad_activation(player: int) -> bool:
+    if state != State.IN_PHASE and state != State.ACTIVATION_IN_PROGRESS:
+        push_error("TurnManager.remove_squad_activation: no phase in progress")
+        return false
+    if player != PLAYER_ONE and player != PLAYER_TWO:
+        push_error("TurnManager.remove_squad_activation: unknown player %d" % player)
+        return false
+    var waiting: int = _remaining[player]
+    if state == State.ACTIVATION_IN_PROGRESS and player == active_player:
+        waiting -= 1
+    if waiting <= 0:
+        push_error("TurnManager.remove_squad_activation: player %d has no waiting squad" % player)
+        return false
+    _remaining[player] -= 1
+
+    # Mid-activation, end_activation() picks the next player from the new counts.
+    if state == State.IN_PHASE and _remaining[active_player] == 0:
+        var opponent := other_player(active_player)
+        if _remaining[opponent] > 0:
+            active_player = opponent
+        else:
+            _end_phase()
     return true
 
 
