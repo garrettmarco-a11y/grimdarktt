@@ -1,3 +1,15 @@
-[gd_scene format=3]
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/core/Main.gd" id="1_main"]
+[ext_resource type="PackedScene" path="res://scenes/core/GameBoard.tscn" id="2_board"]
+[ext_resource type="PackedScene" path="res://scenes/core/TurnManager.tscn" id="3_turns"]
+[ext_resource type="PackedScene" path="res://scenes/ui/HUD.tscn" id="4_hud"]
 
 [node name="Main" type="Node"]
+script = ExtResource("1_main")
+
+[node name="GameBoard" parent="." instance=ExtResource("2_board")]
+
+[node name="TurnManager" parent="." instance=ExtResource("3_turns")]
+
+[node name="HUD" parent="." instance=ExtResource("4_hud")]

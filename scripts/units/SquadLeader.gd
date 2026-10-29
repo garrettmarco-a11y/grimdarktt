@@ -1,6 +1,3 @@
 extends Unit
 class_name SquadLeader
-
-func _ready() -> void:
-    health = 12
-    move_range = 4
+## The directly controlled model of a squad. Stats come from `profile`.
