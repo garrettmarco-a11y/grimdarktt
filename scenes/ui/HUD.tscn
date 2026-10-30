@@ -10,3 +10,14 @@ script = ExtResource("1_hud")
 [node name="PhaseBanner" parent="." instance=ExtResource("2_banner")]
 
 [node name="SquadInfoPanel" parent="." instance=ExtResource("3_info")]
+
+[node name="OrderFeedback" type="Label" parent="."]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -152.0
+offset_top = 200.0
+offset_right = -4.0
+offset_bottom = 260.0
+grow_horizontal = 0
+autowrap_mode = 3
