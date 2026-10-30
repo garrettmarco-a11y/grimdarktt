@@ -3,9 +3,9 @@ extends Node2D
 class_name SquadToken
 ## Placeholder marker for one squad on the battlefield.
 ##
-## Representation only: identity and statistics come from `data`, and the
-## marker can be redrawn or replaced without touching them. Selection state is
-## pushed in by SquadLayer; the token never decides selection itself.
+## Representation only: it draws the SquadState it is given and keeps no
+## battlefield data of its own. SquadLayer sets its pixel position from the
+## state and pushes the `selected` display flag; the token decides neither.
 
 const PLAYER_COLORS := {
     1: Color(0.30, 0.55, 0.95),
@@ -14,18 +14,17 @@ const PLAYER_COLORS := {
 const NEUTRAL_COLOR := Color(0.6, 0.6, 0.6)
 const SELECTION_COLOR := Color(1.0, 0.86, 0.35)
 
-@export var data: SquadData:
-    set(value):
-        data = value
-        queue_redraw()
-## Position on the battlefield in board distance units (continuous, not snapped).
-@export var board_position := Vector2.ZERO
 ## Marker radius in pixels; also the click radius.
 @export var radius := 18.0:
     set(value):
         radius = value
         queue_redraw()
 
+var state: SquadState:
+    set(value):
+        state = value
+        queue_redraw()
+## Display flag only; the selection itself is owned by SelectionManager.
 var selected := false:
     set(value):
         selected = value
@@ -33,11 +32,11 @@ var selected := false:
 
 
 func get_squad_id() -> StringName:
-    return data.squad_id if data else &""
+    return state.squad_id if state else &""
 
 
 func get_player() -> int:
-    return data.player if data else 0
+    return state.get_player() if state else 0
 
 
 ## True if `local_point` (in this token's local pixels) is on the marker.

@@ -2,8 +2,8 @@ extends PanelContainer
 class_name SquadInfoPanel
 ## Shows the selected squad's identity, affiliation and statistics.
 ##
-## Reads straight from the SquadData it is given each time selection changes;
-## it keeps no copy of the statistics.
+## Reads through the selected SquadState to its SquadData each time selection
+## changes; it keeps no copy of the statistics.
 
 const EMPTY_TEXT := "No unit selected"
 
@@ -21,7 +21,8 @@ func _ready() -> void:
     show_squad(null)
 
 
-func show_squad(squad: SquadData) -> void:
+func show_squad(state: SquadState) -> void:
+    var squad := state.data if state else null
     if squad == null or squad.profile == null:
         name_label.text = EMPTY_TEXT
         player_label.visible = false

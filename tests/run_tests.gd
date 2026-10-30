@@ -289,16 +289,14 @@ func _load_main() -> Node:
     return main
 
 
-func _make_token(squad_id: StringName, player: int) -> SquadToken:
+func _make_state(squad_id: StringName, player: int, position := Vector2.ZERO) -> SquadState:
     # Temporary test fixture values, not game balance data.
     var squad := SquadData.new()
     squad.squad_id = squad_id
     squad.display_name = String(squad_id)
     squad.player = player
     squad.profile = UnitProfile.new()
-    var token := SquadToken.new()
-    token.data = squad
-    return token
+    return SquadState.new(squad, position)
 
 
 ## Sends a left click at `position` in viewport coordinates. In-local-coords input
@@ -317,104 +315,177 @@ func _click(position: Vector2) -> void:
 
 func test_placeholder_squads_have_identity_and_stats() -> void:
     var main: Node = await _load_main()
-    var tokens: Array[SquadToken] = main.get_node("GameBoard/Squads").get_tokens()
-    _check_eq(tokens.size(), 2, "placeholder squad count")
+    var squads: Array[SquadState] = main.battle.get_squads()
+    _check_eq(squads.size(), 2, "placeholder squad count")
     var ids := {}
-    for token in tokens:
-        var squad := token.data
-        _check(squad != null, "%s has squad data" % token.name)
+    for state in squads:
+        var squad := state.data
+        _check(squad != null, "%s has squad data" % state.squad_id)
         if squad == null:
             continue
-        ids[squad.squad_id] = true
-        _check(squad.squad_id != &"", "%s has an id" % token.name)
-        _check(squad.display_name != "", "%s has a name" % token.name)
-        _check(squad.profile != null, "%s has a profile" % token.name)
+        ids[state.squad_id] = true
+        _check(state.squad_id != &"", "squad has an id")
+        _check(squad.display_name != "", "%s has a name" % state.squad_id)
+        _check(squad.profile != null, "%s has a profile" % state.squad_id)
         if squad.profile:
             var p := squad.profile
             _check(p.movement > 0.0 and p.quality > 0 and p.toughness > 0 and p.wounds > 0 and p.leadership > 0,
-                "%s has positive placeholder stats" % squad.squad_id)
-    _check_eq(ids.size(), tokens.size(), "squad ids are unique")
+                "%s has positive placeholder stats" % state.squad_id)
+    _check_eq(ids.size(), squads.size(), "squad ids are unique")
+    _check_eq(main.get_node("GameBoard/Squads").get_tokens().size(), squads.size(), "one token per squad")
     main.queue_free()
     await process_frame
 
 
 func test_placeholder_squads_player_affiliation() -> void:
     var main: Node = await _load_main()
-    var layer: SquadLayer = main.get_node("GameBoard/Squads")
-    var p1_squad := layer.get_token(&"p1_line_squad")
-    var p2_squad := layer.get_token(&"p2_raider_squad")
+    var p1_squad: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var p2_squad: SquadState = main.battle.get_squad(&"p2_raider_squad")
     _check(p1_squad != null and p2_squad != null, "both placeholder squads found by id")
     if p1_squad and p2_squad:
         _check_eq(p1_squad.get_player(), P1, "Line Squad belongs to Player 1")
         _check_eq(p2_squad.get_player(), P2, "Raider Squad belongs to Player 2")
+        var layer: SquadLayer = main.get_node("GameBoard/Squads")
+        _check_eq(layer.get_token(&"p1_line_squad").get_player(), P1, "Line Squad token drawn for Player 1")
         _check(SquadToken.PLAYER_COLORS[P1] != SquadToken.PLAYER_COLORS[P2], "players drawn in different colours")
     main.queue_free()
     await process_frame
 
 
-func test_squad_tokens_placed_from_board_units() -> void:
+func test_squad_state_references_data_and_keeps_identity() -> void:
+    var squad: SquadData = load("res://data/squads/p1_line_squad.tres")
+    var state := SquadState.new(squad, Vector2(3.0, 4.0))
+    _check_eq(state.data, squad, "state references its SquadData")
+    _check_eq(state.squad_id, &"p1_line_squad", "id taken from data")
+    _check_eq(state.get_player(), P1, "player read from data")
+    state.board_position = Vector2(9.5, 1.25)
+    _check_eq(state.squad_id, &"p1_line_squad", "id unchanged after moving")
+    print("        (the next 2 errors are expected)")
+    state.squad_id = &"renamed"
+    state.data = SquadData.new()
+    _check_eq(state.squad_id, &"p1_line_squad", "id cannot be reassigned")
+    _check_eq(state.data, squad, "data cannot be reassigned")
+
+
+func test_squad_state_owns_position() -> void:
+    var state := _make_state(&"alpha", P1, Vector2(2.0, 3.0))
+    _check_eq(state.board_position, Vector2(2.0, 3.0), "start position stored in state")
+    var moves := []
+    state.position_changed.connect(func(s): moves.append(s.board_position))
+    state.board_position = Vector2(7.25, 3.5)
+    state.board_position = Vector2(7.25, 3.5)
+    _check_eq(moves, [Vector2(7.25, 3.5)], "position_changed emitted once per actual change")
+
+
+func test_battle_state_add_and_remove() -> void:
+    var battle := BattleState.new()
+    var alpha := _make_state(&"alpha", P1)
+    var bravo := _make_state(&"bravo", P2)
+    var removed := []
+    battle.squad_removed.connect(func(s): removed.append(s))
+    _check(battle.add_squad(alpha) and battle.add_squad(bravo), "squads added")
+    _check_eq(battle.get_squads(), [alpha, bravo], "squads in insertion order")
+    _check_eq(battle.get_squad(&"bravo"), bravo, "lookup by id")
+    print("        (the next 2 errors are expected)")
+    _check(not battle.add_squad(_make_state(&"alpha", P2)), "duplicate id rejected")
+    _check(not battle.remove_squad(&"missing"), "unknown id rejected")
+    _check(battle.remove_squad(&"alpha"), "squad removed")
+    _check_eq(removed, [alpha], "squad_removed reported")
+    _check_eq(battle.get_squad(&"alpha"), null, "removed squad gone")
+
+
+func test_tokens_follow_squad_state_position() -> void:
     var main: Node = await _load_main()
     var board: GameBoard = main.get_node("GameBoard")
     var layer: SquadLayer = main.get_node("GameBoard/Squads")
-    for token in layer.get_tokens():
-        _check_eq(token.position, board.units_to_pixels(token.board_position), "%s pixel position" % token.name)
-        _check(board.contains_point(token.board_position), "%s is on the board" % token.name)
-        _check_eq(layer.token_at(token.position), token, "%s is hit at its centre" % token.name)
+    for state in main.battle.get_squads():
+        var token := layer.get_token(state.squad_id)
+        _check_eq(token.state, state, "%s token draws its state" % state.squad_id)
+        _check_eq(token.position, board.units_to_pixels(state.board_position), "%s start pixel position" % state.squad_id)
+        _check(board.contains_point(state.board_position), "%s is on the board" % state.squad_id)
+        _check_eq(layer.token_at(token.position), token, "%s is hit at its centre" % state.squad_id)
     _check_eq(layer.token_at(Vector2(-50.0, -50.0)), null, "no squad off the board")
+
+    var squad: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var token := layer.get_token(&"p1_line_squad")
+    squad.board_position = Vector2(20.5, 7.75)
+    _check_eq(token.position, board.units_to_pixels(Vector2(20.5, 7.75)), "token follows a state change")
+    _check_eq(layer.token_at(token.position), token, "token clickable at its new position")
+    _check(not "board_position" in token, "token keeps no board position of its own")
+    token.position = Vector2.ZERO
+    _check_eq(squad.board_position, Vector2(20.5, 7.75), "moving the token does not change the state")
+    main.queue_free()
+    await process_frame
+
+
+func test_layer_follows_battle_additions_and_removals() -> void:
+    var main: Node = await _load_main()
+    var layer: SquadLayer = main.get_node("GameBoard/Squads")
+    var extra := _make_state(&"extra", P2, Vector2(24.0, 24.0))
+    main.battle.add_squad(extra)
+    _check(layer.get_token(&"extra") != null, "token created for an added squad")
+    _check_eq(layer.get_tokens().size(), 3, "three tokens")
+    main.battle.remove_squad(&"extra")
+    _check_eq(layer.get_token(&"extra"), null, "token removed with its squad")
+    _check_eq(layer.get_tokens().size(), 2, "two tokens")
+    extra.board_position = Vector2(1.0, 1.0)
     main.queue_free()
     await process_frame
 
 
 func test_select_updates_selection() -> void:
     var selection := SelectionManager.new()
-    var token := _make_token(&"alpha", P1)
+    var alpha := _make_state(&"alpha", P1)
     var changes := []
-    selection.selection_changed.connect(func(t): changes.append(t))
+    selection.selection_changed.connect(func(s): changes.append(s))
     _check_eq(selection.selected_squad, null, "nothing selected initially")
-    selection.select(token)
-    _check_eq(selection.selected_squad, token, "selected squad")
+    selection.select(alpha)
+    _check_eq(selection.selected_squad, alpha, "selected squad state")
     _check_eq(selection.get_selected_squad_id(), &"alpha", "selected squad id")
-    selection.select(token)
-    _check_eq(changes, [token], "reselecting the same squad emits once")
-    token.free()
+    selection.select(alpha)
+    _check_eq(changes, [alpha], "reselecting the same squad emits once")
+    alpha.board_position = Vector2(5.0, 5.0)
+    _check_eq(selection.selected_squad, alpha, "selection unaffected by position change")
     selection.free()
 
 
 func test_selecting_another_squad_replaces_selection() -> void:
     var selection := SelectionManager.new()
-    var first := _make_token(&"alpha", P1)
-    var second := _make_token(&"bravo", P2)
-    selection.select(first)
-    selection.select(second)
-    _check_eq(selection.selected_squad, second, "selection moved to the other player's squad")
+    var alpha := _make_state(&"alpha", P1)
+    var bravo := _make_state(&"bravo", P2)
+    selection.select(alpha)
+    selection.select(bravo)
+    _check_eq(selection.selected_squad, bravo, "selection moved to the other player's squad")
     _check_eq(selection.get_selected_squad_id(), &"bravo", "selected id updated")
-    first.free()
-    second.free()
     selection.free()
 
 
 func test_clear_selection() -> void:
     var selection := SelectionManager.new()
-    var token := _make_token(&"alpha", P1)
+    var alpha := _make_state(&"alpha", P1)
     var changes := []
-    selection.selection_changed.connect(func(t): changes.append(t))
-    selection.select(token)
+    selection.selection_changed.connect(func(s): changes.append(s))
+    selection.select(alpha)
     selection.clear_selection()
     _check_eq(selection.selected_squad, null, "nothing selected")
     _check_eq(selection.get_selected_squad_id(), &"", "no selected id")
-    _check_eq(changes, [token, null], "selection_changed reports the clear")
-    token.free()
+    _check_eq(changes, [alpha, null], "selection_changed reports the clear")
     selection.free()
 
 
-func test_selection_cleared_when_selected_squad_leaves() -> void:
+func test_selection_cleared_when_selected_squad_removed() -> void:
+    var battle := BattleState.new()
     var selection := SelectionManager.new()
-    var token := _make_token(&"alpha", P1)
-    root.add_child(token)
-    selection.select(token)
-    root.remove_child(token)
-    _check_eq(selection.selected_squad, null, "removed squad is no longer selected")
-    token.free()
+    selection.bind_battle(battle)
+    var alpha := _make_state(&"alpha", P1)
+    var bravo := _make_state(&"bravo", P2)
+    battle.add_squad(alpha)
+    battle.add_squad(bravo)
+    selection.select(alpha)
+    battle.remove_squad(&"bravo")
+    _check_eq(selection.selected_squad, alpha, "removing another squad keeps the selection")
+    battle.remove_squad(&"alpha")
+    _check_eq(selection.selected_squad, null, "removing the selected squad clears the selection")
     selection.free()
 
 
@@ -423,8 +494,9 @@ func test_info_panel_shows_selected_squad() -> void:
     root.add_child(panel)
     _check_eq(panel.name_label.text, SquadInfoPanel.EMPTY_TEXT, "empty state on start")
     _check(not panel.stats_grid.visible, "stats hidden when empty")
-    var squad: SquadData = load("res://data/squads/p2_raider_squad.tres")
-    panel.show_squad(squad)
+    var state := SquadState.new(load("res://data/squads/p2_raider_squad.tres"), Vector2(1.0, 1.0))
+    var squad := state.data
+    panel.show_squad(state)
     _check_eq(panel.name_label.text, squad.display_name, "name")
     _check_eq(panel.player_label.text, "Player 2", "affiliation")
     _check(panel.stats_grid.visible, "stats shown")
@@ -446,26 +518,33 @@ func test_click_selection_in_main_scene() -> void:
     var panel: SquadInfoPanel = main.get_node("HUD/SquadInfoPanel")
     var tm: TurnManager = main.get_node("TurnManager")
     var board: GameBoard = main.get_node("GameBoard")
-    var p1_squad := layer.get_token(&"p1_line_squad")
-    var p2_squad := layer.get_token(&"p2_raider_squad")
+    var p1_squad: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var p2_squad: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    var p1_token := layer.get_token(&"p1_line_squad")
+    var p2_token := layer.get_token(&"p2_raider_squad")
     var turn_state := [tm.current_phase, tm.turn_number, tm.priority_player, tm.state]
 
-    _click(p1_squad.global_position + Vector2(5.0, -5.0))
-    _check_eq(selection.selected_squad, p1_squad, "click selects Line Squad")
-    _check(p1_squad.selected and not p2_squad.selected, "only Line Squad shows selection")
+    _click(p1_token.global_position + Vector2(5.0, -5.0))
+    _check_eq(selection.selected_squad, p1_squad, "click selects Line Squad's state")
+    _check(p1_token.selected and not p2_token.selected, "only Line Squad shows selection")
     _check_eq(panel.name_label.text, p1_squad.data.display_name, "panel shows Line Squad")
 
-    _click(p2_squad.global_position)
-    _check_eq(selection.selected_squad, p2_squad, "click transfers selection to Raider Squad")
-    _check(p2_squad.selected and not p1_squad.selected, "only Raider Squad shows selection")
+    _click(p2_token.global_position)
+    _check_eq(selection.selected_squad, p2_squad, "click transfers selection to Raider Squad's state")
+    _check(p2_token.selected and not p1_token.selected, "only Raider Squad shows selection")
     _check_eq(panel.player_label.text, "Player 2", "panel shows Player 2")
 
     var empty_point := board.global_position + board.units_to_pixels(Vector2(24.0, 4.0))
     _check_eq(layer.token_at(layer.to_local(empty_point)), null, "test point is empty battlefield")
     _click(empty_point)
     _check_eq(selection.selected_squad, null, "clicking empty space clears selection")
-    _check(not p1_squad.selected and not p2_squad.selected, "no squad shows selection")
+    _check(not p1_token.selected and not p2_token.selected, "no squad shows selection")
     _check_eq(panel.name_label.text, SquadInfoPanel.EMPTY_TEXT, "panel shows empty state")
+
+    _click(p1_token.global_position)
+    main.battle.remove_squad(&"p1_line_squad")
+    _check_eq(selection.selected_squad, null, "removing the selected squad clears selection in Main")
+    _check_eq(panel.name_label.text, SquadInfoPanel.EMPTY_TEXT, "panel cleared after removal")
 
     _check_eq([tm.current_phase, tm.turn_number, tm.priority_player, tm.state], turn_state,
         "selection leaves turn state untouched")
