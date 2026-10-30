@@ -313,6 +313,19 @@ func _click(position: Vector2) -> void:
     root.push_input(release, true)
 
 
+## Sends a right click at `position` in viewport coordinates.
+func _right_click(position: Vector2) -> void:
+    var click := InputEventMouseButton.new()
+    click.button_index = MOUSE_BUTTON_RIGHT
+    click.position = position
+    click.global_position = position
+    click.pressed = true
+    root.push_input(click, true)
+    var release := click.duplicate() as InputEventMouseButton
+    release.pressed = false
+    root.push_input(release, true)
+
+
 func test_placeholder_squads_have_identity_and_stats() -> void:
     var main: Node = await _load_main()
     var squads: Array[SquadState] = main.battle.get_squads()
@@ -408,8 +421,13 @@ func test_tokens_follow_squad_state_position() -> void:
 
     var squad: SquadState = main.battle.get_squad(&"p1_line_squad")
     var token := layer.get_token(&"p1_line_squad")
+    var old_pixels := token.position
     squad.board_position = Vector2(20.5, 7.75)
-    _check_eq(token.position, board.units_to_pixels(Vector2(20.5, 7.75)), "token follows a state change")
+    var new_pixels := board.units_to_pixels(Vector2(20.5, 7.75))
+    _check_eq(token.target_position, new_pixels, "token targets the new state position")
+    _check_eq(token.position, old_pixels, "token animates rather than jumping")
+    token.advance(100.0)
+    _check_eq(token.position, new_pixels, "token arrives at the state position")
     _check_eq(layer.token_at(token.position), token, "token clickable at its new position")
     _check(not "board_position" in token, "token keeps no board position of its own")
     token.position = Vector2.ZERO
@@ -548,6 +566,189 @@ func test_click_selection_in_main_scene() -> void:
 
     _check_eq([tm.current_phase, tm.turn_number, tm.priority_player, tm.state], turn_state,
         "selection leaves turn state untouched")
+    main.queue_free()
+    await process_frame
+
+
+## A MovementController bound to a fresh battle and a started TurnManager.
+func _movement_fixture(squads: Array) -> Dictionary:
+    var battle := BattleState.new()
+    for state in squads:
+        battle.add_squad(state)
+    var tm := TurnManager.new()
+    var movement := MovementController.new()
+    movement.bind(battle, tm, Vector2(48.0, 32.0))
+    tm.start_game()
+    return {"battle": battle, "tm": tm, "movement": movement}
+
+
+func _free_fixture(fixture: Dictionary) -> void:
+    fixture.tm.free()
+    fixture.movement.free()
+
+
+func _make_mover(m: float, position: Vector2) -> SquadState:
+    # Temporary test fixture values, not game balance data.
+    var state := _make_state(&"mover", P1, position)
+    state.data.profile.movement = m
+    return state
+
+
+func test_movement_allowance_from_profile() -> void:
+    var line: SquadData = load("res://data/squads/p1_line_squad.tres")
+    _check_eq(MovementRules.allowance_for(line), line.profile.movement, "allowance is the profile's M")
+    _check_eq(MovementRules.allowance_for(null), 0.0, "no data, no movement")
+    var fixture := _movement_fixture([_make_mover(4.5, Vector2(10.0, 10.0))])
+    var state: SquadState = fixture.battle.get_squad(&"mover")
+    _check_eq(state.movement_allowance, 4.5, "allowance set from M at turn start")
+    _check_eq(state.turn_start_position, Vector2(10.0, 10.0), "turn start position recorded")
+    _check(not state.movement_complete, "movement not complete at turn start")
+    _free_fixture(fixture)
+
+
+func test_movement_distance_is_continuous() -> void:
+    _check_eq(MovementRules.distance(Vector2(0.0, 0.0), Vector2(3.0, 4.0)), 5.0, "3-4-5 diagonal")
+    _check(is_equal_approx(MovementRules.distance(Vector2(1.25, 2.5), Vector2(2.75, 4.5)), 2.5),
+        "fractional off-grid distance")
+    _check_eq(MovementRules.distance(Vector2(7.0, 7.0), Vector2(7.0, 7.0)), 0.0, "zero distance")
+
+
+func test_valid_order_updates_authoritative_state() -> void:
+    var fixture := _movement_fixture([_make_mover(6.0, Vector2(10.0, 10.0))])
+    var state: SquadState = fixture.battle.get_squad(&"mover")
+    var ordered := []
+    fixture.movement.move_ordered.connect(func(s, from, to): ordered.append([s, from, to]))
+    var result: MovementRules.Result = fixture.movement.order_move(state, Vector2(13.0, 14.0))
+    _check_eq(result, MovementRules.Result.OK, "order accepted")
+    _check_eq(state.board_position, Vector2(13.0, 14.0), "position updated")
+    _check_eq(state.distance_moved, 5.0, "distance moved tracked")
+    _check(is_equal_approx(state.get_remaining_movement(), 1.0), "remaining movement")
+    _check(not state.movement_complete, "movement not yet complete")
+    _check_eq(ordered, [[state, Vector2(10.0, 10.0), Vector2(13.0, 14.0)]], "move_ordered reported")
+    _free_fixture(fixture)
+
+
+func test_invalid_orders_leave_state_unchanged() -> void:
+    var fixture := _movement_fixture([_make_mover(6.0, Vector2(2.0, 2.0))])
+    var state: SquadState = fixture.battle.get_squad(&"mover")
+    var rejected := []
+    fixture.movement.move_rejected.connect(func(_s, _d, r): rejected.append(r))
+    _check_eq(fixture.movement.order_move(state, Vector2(9.0, 2.0)), MovementRules.Result.OUT_OF_RANGE, "7 > 6 rejected")
+    _check_eq(fixture.movement.order_move(state, Vector2(-1.0, 2.0)), MovementRules.Result.OFF_BOARD, "off-board rejected")
+    _check_eq(fixture.movement.order_move(null, Vector2(3.0, 3.0)), MovementRules.Result.NO_SQUAD, "no squad rejected")
+    _check_eq(rejected, [MovementRules.Result.OUT_OF_RANGE, MovementRules.Result.OFF_BOARD, MovementRules.Result.NO_SQUAD],
+        "move_rejected reported")
+    _check_eq(state.board_position, Vector2(2.0, 2.0), "position unchanged")
+    _check_eq(state.turn_start_position, Vector2(2.0, 2.0), "turn start unchanged")
+    _check_eq(state.distance_moved, 0.0, "nothing moved")
+    _check(not state.movement_complete, "still free to move")
+    _free_fixture(fixture)
+
+
+func test_allowance_measured_from_turn_start() -> void:
+    var fixture := _movement_fixture([_make_mover(6.0, Vector2(10.0, 10.0))])
+    var state: SquadState = fixture.battle.get_squad(&"mover")
+    var movement: MovementController = fixture.movement
+    _check_eq(movement.order_move(state, Vector2(14.0, 10.0)), MovementRules.Result.OK, "first order of 4")
+    _check_eq(movement.order_move(state, Vector2(17.0, 10.0)), MovementRules.Result.OUT_OF_RANGE,
+        "7 from turn start rejected even though only 3 from current position")
+    _check_eq(state.board_position, Vector2(14.0, 10.0), "rejected order left position")
+    _check_eq(movement.order_move(state, Vector2(10.0, 15.5)), MovementRules.Result.OK, "5.5 from turn start accepted")
+    _check(is_equal_approx(state.distance_moved, 5.5), "distance measured from turn start")
+    _check_eq(movement.order_move(state, Vector2(16.0, 10.0)), MovementRules.Result.OK, "exactly the allowance accepted")
+    _check(state.movement_complete, "full allowance used completes movement")
+    _check_eq(movement.order_move(state, Vector2(12.0, 10.0)), MovementRules.Result.MOVEMENT_COMPLETE,
+        "no further orders once complete")
+    _check_eq(state.board_position, Vector2(16.0, 10.0), "position held after exhaustion")
+    _free_fixture(fixture)
+
+
+func test_no_move_orders_outside_movement_phase() -> void:
+    var fixture := _movement_fixture([_make_mover(6.0, Vector2(10.0, 10.0))])
+    var state: SquadState = fixture.battle.get_squad(&"mover")
+    var tm: TurnManager = fixture.tm
+    for phase in [Phase.SHOOTING, Phase.ASSAULT, Phase.MORALE]:
+        _play_phase(tm, 1, 1)
+        _check_eq(tm.current_phase, phase, "advanced to %s" % TurnManager.phase_to_string(phase))
+        _check_eq(fixture.movement.order_move(state, Vector2(11.0, 10.0)), MovementRules.Result.WRONG_PHASE,
+            "rejected in %s" % TurnManager.phase_to_string(phase))
+    _check_eq(state.board_position, Vector2(10.0, 10.0), "position unchanged")
+    _free_fixture(fixture)
+
+
+func test_movement_resets_at_new_turn() -> void:
+    var fixture := _movement_fixture([_make_mover(6.0, Vector2(10.0, 10.0))])
+    var state: SquadState = fixture.battle.get_squad(&"mover")
+    var tm: TurnManager = fixture.tm
+    fixture.movement.order_move(state, Vector2(16.0, 10.0))
+    _check(state.movement_complete, "complete in turn 1")
+    for i in 3:
+        _play_phase(tm, 1, 1)
+    _check(state.movement_complete, "no reset during the same turn")
+    _check_eq(state.turn_start_position, Vector2(10.0, 10.0), "turn start kept until turn ends")
+    _play_phase(tm, 1, 1)
+    _check_eq(tm.turn_number, 2, "turn 2 started")
+    _check(not state.movement_complete, "movement available again")
+    _check_eq(state.turn_start_position, Vector2(16.0, 10.0), "turn starts from current position")
+    _check_eq(state.distance_moved, 0.0, "distance reset")
+    _check_eq(state.movement_allowance, 6.0, "allowance re-derived from M")
+    _check_eq(fixture.movement.order_move(state, Vector2(22.0, 10.0)), MovementRules.Result.OK, "can move again")
+    _free_fixture(fixture)
+
+
+func test_squad_added_mid_game_gets_movement() -> void:
+    var fixture := _movement_fixture([])
+    var late := _make_mover(5.0, Vector2(3.0, 3.0))
+    fixture.battle.add_squad(late)
+    _check_eq(late.movement_allowance, 5.0, "allowance set when added")
+    _free_fixture(fixture)
+
+
+func test_move_order_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var board: GameBoard = main.get_node("GameBoard")
+    var layer: SquadLayer = main.get_node("GameBoard/Squads")
+    var overlay: MovementOverlay = main.get_node("GameBoard/MovementOverlay")
+    var panel: SquadInfoPanel = main.get_node("HUD/SquadInfoPanel")
+    var feedback: Label = main.get_node("HUD/OrderFeedback")
+    var selection: SelectionManager = main.get_node("SelectionManager")
+    var tm: TurnManager = main.get_node("TurnManager")
+    var squad: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var token := layer.get_token(&"p1_line_squad")
+    var turn_state := [tm.current_phase, tm.turn_number, tm.priority_player, tm.state]
+    var allowance := squad.data.profile.movement
+
+    _right_click(board.global_position + board.units_to_pixels(Vector2(14.0, 16.0)))
+    _check_eq(feedback.text, "Select a squad to move", "feedback with nothing selected")
+
+    _click(token.global_position)
+    _check_eq(selection.selected_squad, squad, "Line Squad selected")
+    var start := squad.board_position
+    var destination := start + Vector2(3.0, 4.0)
+    _right_click(board.global_position + board.units_to_pixels(destination))
+    _check(squad.board_position.is_equal_approx(destination), "right-click moves the authoritative position")
+    _check(is_equal_approx(squad.distance_moved, 5.0), "distance tracked")
+    _check(token.is_moving(), "token animating toward the destination")
+    _check(token.selected, "selection ring kept while moving")
+    _check_eq(selection.selected_squad, squad, "still selected while moving")
+    _check(feedback.text.begins_with(squad.data.display_name + " moving"), "order feedback shown")
+    _check(panel.movement_label.text.begins_with("Moved 5.0 / "), "panel shows distance moved")
+    _check_eq(panel.name_label.text, squad.data.display_name, "panel still shows the squad")
+    for i in 120:
+        await process_frame
+        if not token.is_moving():
+            break
+    _check(not token.is_moving(), "token arrived")
+    _check(token.position.is_equal_approx(board.units_to_pixels(destination)), "token at the authoritative position")
+
+    var too_far := start + Vector2(allowance + 1.0, 0.0)
+    _right_click(board.global_position + board.units_to_pixels(too_far))
+    _check(squad.board_position.is_equal_approx(destination), "out-of-range order leaves position")
+    _check(feedback.text.begins_with("Out of range"), "out-of-range feedback")
+    _check(overlay.is_showing_rejection(), "rejected destination marked")
+
+    _check_eq([tm.current_phase, tm.turn_number, tm.priority_player, tm.state], turn_state,
+        "movement leaves turn state untouched")
     main.queue_free()
     await process_frame
 

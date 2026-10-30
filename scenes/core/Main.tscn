@@ -1,4 +1,4 @@
-[gd_scene load_steps=12 format=3]
+[gd_scene load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://scripts/core/Main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://scenes/core/GameBoard.tscn" id="2_board"]
@@ -9,6 +9,8 @@
 [ext_resource type="Resource" path="res://data/squads/p1_line_squad.tres" id="7_p1_squad"]
 [ext_resource type="Resource" path="res://data/squads/p2_raider_squad.tres" id="8_p2_squad"]
 [ext_resource type="Script" path="res://scripts/core/SelectionManager.gd" id="9_selection"]
+[ext_resource type="Script" path="res://scripts/movement/MovementOverlay.gd" id="10_overlay"]
+[ext_resource type="Script" path="res://scripts/movement/MovementController.gd" id="11_movement"]
 
 [sub_resource type="Resource" id="Resource_p1_setup"]
 script = ExtResource("6_setup")
@@ -27,6 +29,9 @@ squad_setups = Array[ExtResource("6_setup")]([SubResource("Resource_p1_setup"), 
 [node name="GameBoard" parent="." instance=ExtResource("2_board")]
 position = Vector2(160, 64)
 
+[node name="MovementOverlay" type="Node2D" parent="GameBoard"]
+script = ExtResource("10_overlay")
+
 [node name="Squads" type="Node2D" parent="GameBoard"]
 script = ExtResource("5_layer")
 
@@ -36,3 +41,6 @@ script = ExtResource("5_layer")
 
 [node name="SelectionManager" type="Node" parent="."]
 script = ExtResource("9_selection")
+
+[node name="MovementController" type="Node" parent="."]
+script = ExtResource("11_movement")
