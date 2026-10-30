@@ -1,31 +1,34 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=12 format=3]
 
 [ext_resource type="Script" path="res://scripts/core/Main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://scenes/core/GameBoard.tscn" id="2_board"]
 [ext_resource type="PackedScene" path="res://scenes/core/TurnManager.tscn" id="3_turns"]
 [ext_resource type="PackedScene" path="res://scenes/ui/HUD.tscn" id="4_hud"]
 [ext_resource type="Script" path="res://scripts/units/SquadLayer.gd" id="5_layer"]
-[ext_resource type="PackedScene" path="res://scenes/units/SquadToken.tscn" id="6_token"]
+[ext_resource type="Script" path="res://scripts/resources/SquadSetup.gd" id="6_setup"]
 [ext_resource type="Resource" path="res://data/squads/p1_line_squad.tres" id="7_p1_squad"]
 [ext_resource type="Resource" path="res://data/squads/p2_raider_squad.tres" id="8_p2_squad"]
 [ext_resource type="Script" path="res://scripts/core/SelectionManager.gd" id="9_selection"]
 
+[sub_resource type="Resource" id="Resource_p1_setup"]
+script = ExtResource("6_setup")
+squad = ExtResource("7_p1_squad")
+start_position = Vector2(12, 16)
+
+[sub_resource type="Resource" id="Resource_p2_setup"]
+script = ExtResource("6_setup")
+squad = ExtResource("8_p2_squad")
+start_position = Vector2(36, 16)
+
 [node name="Main" type="Node"]
 script = ExtResource("1_main")
+squad_setups = Array[ExtResource("6_setup")]([SubResource("Resource_p1_setup"), SubResource("Resource_p2_setup")])
 
 [node name="GameBoard" parent="." instance=ExtResource("2_board")]
 position = Vector2(160, 64)
 
 [node name="Squads" type="Node2D" parent="GameBoard"]
 script = ExtResource("5_layer")
-
-[node name="LineSquad" parent="GameBoard/Squads" instance=ExtResource("6_token")]
-data = ExtResource("7_p1_squad")
-board_position = Vector2(12, 16)
-
-[node name="RaiderSquad" parent="GameBoard/Squads" instance=ExtResource("6_token")]
-data = ExtResource("8_p2_squad")
-board_position = Vector2(36, 16)
 
 [node name="TurnManager" parent="." instance=ExtResource("3_turns")]
 

@@ -11,8 +11,4 @@ func bind_turn_manager(turn_manager: TurnManager) -> void:
 
 
 func bind_selection(selection: SelectionManager) -> void:
-    selection.selection_changed.connect(_on_selection_changed)
-
-
-func _on_selection_changed(token: SquadToken) -> void:
-    squad_info_panel.show_squad(token.data if token else null)
+    selection.selection_changed.connect(squad_info_panel.show_squad)

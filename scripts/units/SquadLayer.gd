@@ -1,17 +1,26 @@
-@tool
 extends Node2D
 class_name SquadLayer
-## Holds the battlefield's SquadToken children: places them from board units
-## and turns mouse clicks into squad_clicked / empty_space_clicked.
+## Draws the battlefield's squads: keeps one SquadToken per SquadState in a
+## BattleState, positions tokens from their state, and turns mouse clicks into
+## squad_clicked / empty_space_clicked.
 ##
-## Must be a direct child of a GameBoard. Knows nothing about turns or phases.
+## Must be a direct child of a GameBoard. Knows nothing about turns or phases
+## and owns no battlefield or selection state.
 
-signal squad_clicked(token: SquadToken)
+signal squad_clicked(state: SquadState)
 signal empty_space_clicked
 
+@export var token_scene: PackedScene = preload("res://scenes/units/SquadToken.tscn")
 
-func _ready() -> void:
-    place_tokens()
+var _tokens: Dictionary = {}
+
+
+## Shows every squad in `battle` and follows its later additions and removals.
+func bind_battle(battle: BattleState) -> void:
+    battle.squad_added.connect(_add_token)
+    battle.squad_removed.connect(_remove_token)
+    for state in battle.get_squads():
+        _add_token(state)
 
 
 func get_tokens() -> Array[SquadToken]:
@@ -23,19 +32,7 @@ func get_tokens() -> Array[SquadToken]:
 
 
 func get_token(squad_id: StringName) -> SquadToken:
-    for token in get_tokens():
-        if token.get_squad_id() == squad_id:
-            return token
-    return null
-
-
-## Moves every token to the pixel position of its board_position.
-func place_tokens() -> void:
-    var board := get_parent() as GameBoard
-    if board == null:
-        return
-    for token in get_tokens():
-        token.position = board.units_to_pixels(token.board_position)
+    return _tokens.get(squad_id)
 
 
 ## The topmost token under `local_point` (this layer's local pixels), or null.
@@ -48,21 +45,46 @@ func token_at(local_point: Vector2) -> SquadToken:
     return null
 
 
-## Shows `selected_token` as selected and every other token as not selected.
-func show_selection(selected_token: SquadToken) -> void:
+## Shows `selected` as selected and every other squad as not selected.
+func show_selection(selected: SquadState) -> void:
     for token in get_tokens():
-        token.selected = token == selected_token
+        token.selected = selected != null and token.state == selected
+
+
+func _add_token(state: SquadState) -> void:
+    var token := token_scene.instantiate() as SquadToken
+    token.name = String(state.squad_id)
+    token.state = state
+    _tokens[state.squad_id] = token
+    add_child(token)
+    state.position_changed.connect(_sync_token_position)
+    _sync_token_position(state)
+
+
+func _remove_token(state: SquadState) -> void:
+    var token: SquadToken = _tokens.get(state.squad_id)
+    if token == null:
+        return
+    state.position_changed.disconnect(_sync_token_position)
+    _tokens.erase(state.squad_id)
+    remove_child(token)
+    token.queue_free()
+
+
+func _sync_token_position(state: SquadState) -> void:
+    var token: SquadToken = _tokens.get(state.squad_id)
+    var board := get_parent() as GameBoard
+    if token and board:
+        token.position = board.units_to_pixels(state.board_position)
 
 
 func _unhandled_input(event: InputEvent) -> void:
-    if Engine.is_editor_hint():
-        return
     var click := event as InputEventMouseButton
     if click == null or click.button_index != MOUSE_BUTTON_LEFT or not click.pressed:
         return
     var token := token_at(get_global_transform_with_canvas().affine_inverse() * click.position)
     if token:
-        squad_clicked.emit(token)
+        squad_clicked.emit(token.state)
     else:
         empty_space_clicked.emit()
     get_viewport().set_input_as_handled()
