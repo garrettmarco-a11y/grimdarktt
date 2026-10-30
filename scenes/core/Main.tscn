@@ -9,6 +9,7 @@
 script = ExtResource("1_main")
 
 [node name="GameBoard" parent="." instance=ExtResource("2_board")]
+position = Vector2(160, 64)
 
 [node name="TurnManager" parent="." instance=ExtResource("3_turns")]
 

@@ -236,6 +236,52 @@ func test_removal_during_activation() -> void:
     tm.free()
 
 
+func test_board_rect_follows_size_and_scale() -> void:
+    var board := GameBoard.new()
+    # Temporary test fixture values, not the battlefield's final dimensions.
+    board.board_size = Vector2(10.0, 8.0)
+    board.pixels_per_unit = 5.0
+    _check_eq(board.get_board_rect(), Rect2(0.0, 0.0, 50.0, 40.0), "board rect")
+    _check_eq(board.units_to_pixels(Vector2(2.0, 3.5)), Vector2(10.0, 17.5), "units to pixels")
+    _check_eq(board.pixels_to_units(Vector2(10.0, 17.5)), Vector2(2.0, 3.5), "pixels to units")
+    board.free()
+
+
+func test_board_contains_point_is_continuous() -> void:
+    var board := GameBoard.new()
+    board.board_size = Vector2(10.0, 8.0)
+    _check(board.contains_point(Vector2(3.37, 7.91)), "off-grid interior point")
+    _check(board.contains_point(Vector2.ZERO), "corner is on the board")
+    _check(board.contains_point(Vector2(10.0, 8.0)), "far corner is on the board")
+    _check(not board.contains_point(Vector2(-0.01, 4.0)), "left of the edge")
+    _check(not board.contains_point(Vector2(5.0, 8.01)), "below the edge")
+    board.free()
+
+
+func test_grid_line_positions() -> void:
+    _check_eq(GameBoard.grid_line_positions(6.0, 24.0), PackedFloat32Array([6.0, 12.0, 18.0]), "edges excluded")
+    _check_eq(GameBoard.grid_line_positions(5.0, 12.0), PackedFloat32Array([5.0, 10.0]), "uneven length")
+    _check_eq(GameBoard.grid_line_positions(0.5, 1.5), PackedFloat32Array([0.5, 1.0]), "fractional step")
+    _check_eq(GameBoard.grid_line_positions(0.0, 10.0).size(), 0, "zero step draws nothing")
+
+
+func test_board_layout_in_main_scene() -> void:
+    var main: Node = load("res://scenes/core/Main.tscn").instantiate()
+    root.add_child(main)
+    await process_frame
+    var board := main.get_node("GameBoard") as GameBoard
+    var banner := main.get_node("HUD/PhaseBanner") as Control
+    var board_rect := board.get_global_transform() * board.get_board_rect()
+    var viewport := Rect2(Vector2.ZERO, Vector2(
+        ProjectSettings.get_setting("display/window/size/viewport_width"),
+        ProjectSettings.get_setting("display/window/size/viewport_height")))
+    _check_eq(viewport.size, Vector2(1280, 720), "viewport size unchanged")
+    _check(viewport.encloses(board_rect), "board %s fits the viewport" % board_rect)
+    _check(not board_rect.intersects(banner.get_global_rect()), "board clears the phase banner")
+    main.queue_free()
+    await process_frame
+
+
 func test_unit_profile_resource() -> void:
     var profile := UnitProfile.new()
     # Temporary test fixture values, not game balance data.
