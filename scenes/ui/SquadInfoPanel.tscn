@@ -1,0 +1,111 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/SquadInfoPanel.gd" id="1_panel"]
+
+[node name="SquadInfoPanel" type="PanelContainer"]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -152.0
+offset_top = 64.0
+offset_right = -4.0
+offset_bottom = 164.0
+grow_horizontal = 0
+script = ExtResource("1_panel")
+
+[node name="Margin" type="MarginContainer" parent="."]
+layout_mode = 2
+theme_override_constants/margin_left = 8
+theme_override_constants/margin_top = 6
+theme_override_constants/margin_right = 8
+theme_override_constants/margin_bottom = 6
+
+[node name="Rows" type="VBoxContainer" parent="Margin"]
+layout_mode = 2
+
+[node name="NameLabel" type="Label" parent="Margin/Rows"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "No unit selected"
+autowrap_mode = 3
+
+[node name="PlayerLabel" type="Label" parent="Margin/Rows"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
+text = "-"
+
+[node name="StatsGrid" type="GridContainer" parent="Margin/Rows"]
+unique_name_in_owner = true
+layout_mode = 2
+columns = 5
+
+[node name="MovementHeader" type="Label" parent="Margin/Rows/StatsGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
+text = "M"
+horizontal_alignment = 1
+
+[node name="QualityHeader" type="Label" parent="Margin/Rows/StatsGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
+text = "Q"
+horizontal_alignment = 1
+
+[node name="ToughnessHeader" type="Label" parent="Margin/Rows/StatsGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
+text = "T"
+horizontal_alignment = 1
+
+[node name="WoundsHeader" type="Label" parent="Margin/Rows/StatsGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
+text = "W"
+horizontal_alignment = 1
+
+[node name="LeadershipHeader" type="Label" parent="Margin/Rows/StatsGrid"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_colors/font_color = Color(0.7, 0.7, 0.7, 1)
+text = "Ld"
+horizontal_alignment = 1
+
+[node name="MovementValue" type="Label" parent="Margin/Rows/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "-"
+horizontal_alignment = 1
+
+[node name="QualityValue" type="Label" parent="Margin/Rows/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "-"
+horizontal_alignment = 1
+
+[node name="ToughnessValue" type="Label" parent="Margin/Rows/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "-"
+horizontal_alignment = 1
+
+[node name="WoundsValue" type="Label" parent="Margin/Rows/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "-"
+horizontal_alignment = 1
+
+[node name="LeadershipValue" type="Label" parent="Margin/Rows/StatsGrid"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "-"
+horizontal_alignment = 1
