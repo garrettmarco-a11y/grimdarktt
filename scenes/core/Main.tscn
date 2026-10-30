@@ -1,9 +1,14 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=10 format=3]
 
 [ext_resource type="Script" path="res://scripts/core/Main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://scenes/core/GameBoard.tscn" id="2_board"]
 [ext_resource type="PackedScene" path="res://scenes/core/TurnManager.tscn" id="3_turns"]
 [ext_resource type="PackedScene" path="res://scenes/ui/HUD.tscn" id="4_hud"]
+[ext_resource type="Script" path="res://scripts/units/SquadLayer.gd" id="5_layer"]
+[ext_resource type="PackedScene" path="res://scenes/units/SquadToken.tscn" id="6_token"]
+[ext_resource type="Resource" path="res://data/squads/p1_line_squad.tres" id="7_p1_squad"]
+[ext_resource type="Resource" path="res://data/squads/p2_raider_squad.tres" id="8_p2_squad"]
+[ext_resource type="Script" path="res://scripts/core/SelectionManager.gd" id="9_selection"]
 
 [node name="Main" type="Node"]
 script = ExtResource("1_main")
@@ -11,6 +16,20 @@ script = ExtResource("1_main")
 [node name="GameBoard" parent="." instance=ExtResource("2_board")]
 position = Vector2(160, 64)
 
+[node name="Squads" type="Node2D" parent="GameBoard"]
+script = ExtResource("5_layer")
+
+[node name="LineSquad" parent="GameBoard/Squads" instance=ExtResource("6_token")]
+data = ExtResource("7_p1_squad")
+board_position = Vector2(12, 16)
+
+[node name="RaiderSquad" parent="GameBoard/Squads" instance=ExtResource("6_token")]
+data = ExtResource("8_p2_squad")
+board_position = Vector2(36, 16)
+
 [node name="TurnManager" parent="." instance=ExtResource("3_turns")]
 
 [node name="HUD" parent="." instance=ExtResource("4_hud")]
+
+[node name="SelectionManager" type="Node" parent="."]
+script = ExtResource("9_selection")
