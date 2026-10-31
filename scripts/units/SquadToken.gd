@@ -15,6 +15,10 @@ const PLAYER_COLORS := {
 }
 const NEUTRAL_COLOR := Color(0.6, 0.6, 0.6)
 const SELECTION_COLOR := Color(1.0, 0.86, 0.35)
+const ACTIVE_COLOR := Color(1.0, 1.0, 1.0)
+
+## Activation display states, pushed in by SquadLayer.
+enum ActivationDisplay { READY, ACTIVE, SPENT }
 
 ## Glide speed toward `target_position`, in pixels per second.
 @export var move_speed := 240.0
@@ -32,6 +36,11 @@ var state: SquadState:
 var selected := false:
     set(value):
         selected = value
+        queue_redraw()
+## Display flag only; activation itself is owned by ActivationController.
+var activation_display := ActivationDisplay.READY:
+    set(value):
+        activation_display = value
         queue_redraw()
 ## Pixel position of the squad's authoritative board position.
 var target_position := Vector2.ZERO:
@@ -80,6 +89,10 @@ func contains_local_point(local_point: Vector2) -> bool:
 
 func _draw() -> void:
     var color: Color = PLAYER_COLORS.get(get_player(), NEUTRAL_COLOR)
+    if activation_display == ActivationDisplay.SPENT:
+        color = color.lerp(NEUTRAL_COLOR, 0.6).darkened(0.35)
+    if activation_display == ActivationDisplay.ACTIVE:
+        draw_circle(Vector2.ZERO, radius + 11.0, ACTIVE_COLOR, false, 2.0)
     if selected:
         draw_circle(Vector2.ZERO, radius + 6.0, SELECTION_COLOR, false, 3.0)
     draw_circle(Vector2.ZERO, radius, color.darkened(0.45))

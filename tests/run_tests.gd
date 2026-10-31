@@ -63,6 +63,9 @@ func _play_phase(tm: TurnManager, p1_count: int, p2_count: int) -> Array:
     var actors := []
     tm.begin_phase(p1_count, p2_count)
     while tm.state == TurnManager.State.IN_PHASE:
+        if actors.size() > p1_count + p2_count:
+            _failures.append("_play_phase: phase did not end after %d activations" % actors.size())
+            break
         actors.append(tm.start_activation())
         tm.end_activation()
     return actors
@@ -715,7 +718,6 @@ func test_move_order_in_main_scene() -> void:
     var tm: TurnManager = main.get_node("TurnManager")
     var squad: SquadState = main.battle.get_squad(&"p1_line_squad")
     var token := layer.get_token(&"p1_line_squad")
-    var turn_state := [tm.current_phase, tm.turn_number, tm.priority_player, tm.state]
     var allowance := squad.data.profile.movement
 
     _right_click(board.global_position + board.units_to_pixels(Vector2(14.0, 16.0)))
@@ -723,6 +725,11 @@ func test_move_order_in_main_scene() -> void:
 
     _click(token.global_position)
     _check_eq(selection.selected_squad, squad, "Line Squad selected")
+    _right_click(board.global_position + board.units_to_pixels(squad.board_position + Vector2(1.0, 0.0)))
+    _check_eq(feedback.text, "Activate Line Squad before moving it", "orders need an activation")
+    var activation := main.get_node("ActivationController") as ActivationController
+    _check_eq(activation.activate(squad), ActivationController.Result.OK, "Line Squad activated")
+    var turn_state := [tm.current_phase, tm.turn_number, tm.priority_player, tm.state]
     var start := squad.board_position
     var destination := start + Vector2(3.0, 4.0)
     _right_click(board.global_position + board.units_to_pixels(destination))
@@ -749,6 +756,230 @@ func test_move_order_in_main_scene() -> void:
 
     _check_eq([tm.current_phase, tm.turn_number, tm.priority_player, tm.state], turn_state,
         "movement leaves turn state untouched")
+    main.queue_free()
+    await process_frame
+
+
+## Activates and ends every squad that may activate until the current phase
+## ends. Returns the squad ids in activation order.
+func _complete_phase(activation: ActivationController, battle: BattleState, tm: TurnManager) -> Array:
+    var phase := tm.current_phase
+    var turn := tm.turn_number
+    var order := []
+    while tm.current_phase == phase and tm.turn_number == turn and order.size() <= battle.get_squads().size():
+        var next: SquadState = null
+        for state in battle.get_squads():
+            if activation.can_activate(state) == ActivationController.Result.OK:
+                next = state
+                break
+        if next == null:
+            break
+        activation.activate(next)
+        order.append(next.squad_id)
+        activation.end_activation()
+    return order
+
+
+## A started game with `p1` and `p2` squads per player and an ActivationController.
+func _activation_fixture(p1: int, p2: int) -> Dictionary:
+    var battle := BattleState.new()
+    for i in p1:
+        battle.add_squad(_make_state(StringName("p1_%d" % i), P1, Vector2(5.0 + i, 5.0)))
+    for i in p2:
+        battle.add_squad(_make_state(StringName("p2_%d" % i), P2, Vector2(5.0 + i, 20.0)))
+    for state in battle.get_squads():
+        # Temporary test fixture value, not game balance data.
+        state.data.profile.movement = 6.0
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var movement := MovementController.new()
+    movement.bind(battle, tm, Vector2(48.0, 32.0))
+    movement.activation = activation
+    tm.start_game()
+    return {"battle": battle, "tm": tm, "activation": activation, "movement": movement}
+
+
+func _free_activation_fixture(fixture: Dictionary) -> void:
+    fixture.tm.free()
+    fixture.activation.free()
+    fixture.movement.free()
+
+
+func test_activation_starts_movement_phase_with_squad_counts() -> void:
+    var f := _activation_fixture(2, 3)
+    var tm: TurnManager = f.tm
+    _check_eq(tm.state, TurnManager.State.IN_PHASE, "phase begun automatically")
+    _check_eq(tm.get_remaining_activations(P1), 2, "Player 1 eligible squads")
+    _check_eq(tm.get_remaining_activations(P2), 3, "Player 2 eligible squads")
+    _check_eq(f.activation.get_active_player(), P2, "more squads takes priority")
+    _free_activation_fixture(f)
+
+
+func test_players_alternate_squad_activations() -> void:
+    var f := _activation_fixture(2, 2)
+    var players := []
+    var battle: BattleState = f.battle
+    for id in _complete_phase(f.activation, battle, f.tm):
+        players.append(battle.get_squad(id).get_player())
+    _check_eq(players, [P1, P2, P1, P2], "activations alternate starting with Player 1")
+    _free_activation_fixture(f)
+
+
+func test_squad_ownership_enforced() -> void:
+    var f := _activation_fixture(1, 1)
+    var activation: ActivationController = f.activation
+    var p1_squad: SquadState = f.battle.get_squad(&"p1_0")
+    var p2_squad: SquadState = f.battle.get_squad(&"p2_0")
+    _check_eq(activation.get_active_player(), P1, "Player 1 to activate")
+    _check_eq(activation.activate(p2_squad), ActivationController.Result.WRONG_PLAYER, "opponent's squad refused")
+    _check_eq(activation.active_squad, null, "nothing activated")
+    _check_eq(activation.activate(p1_squad), ActivationController.Result.OK, "own squad accepted")
+    _check_eq(activation.activate(p2_squad), ActivationController.Result.ACTIVATION_IN_PROGRESS,
+        "no second activation while one is running")
+    activation.end_activation()
+    _check_eq(activation.get_active_player(), P2, "control passes to Player 2")
+    _check_eq(activation.activate(p1_squad), ActivationController.Result.ALREADY_ACTIVATED, "Player 1's spent squad refused")
+    _check_eq(activation.activate(p2_squad), ActivationController.Result.OK, "Player 2 activates")
+    _free_activation_fixture(f)
+
+
+func test_squad_cannot_activate_twice_in_a_phase() -> void:
+    var f := _activation_fixture(2, 1)
+    var activation: ActivationController = f.activation
+    var first: SquadState = f.battle.get_squad(&"p1_0")
+    activation.activate(first)
+    activation.end_activation()
+    activation.activate(f.battle.get_squad(&"p2_0"))
+    activation.end_activation()
+    _check_eq(activation.get_active_player(), P1, "Player 1 again")
+    _check(activation.has_activated(first), "first squad marked activated")
+    _check_eq(activation.activate(first), ActivationController.Result.ALREADY_ACTIVATED, "second activation refused")
+    _check_eq(activation.activate(f.battle.get_squad(&"p1_1")), ActivationController.Result.OK,
+        "the player's other squad may activate")
+    _free_activation_fixture(f)
+
+
+func test_all_squads_activate_and_phase_advances() -> void:
+    var f := _activation_fixture(2, 2)
+    var tm: TurnManager = f.tm
+    var order := _complete_phase(f.activation, f.battle, tm)
+    _check_eq(order.size(), 4, "every squad activated once")
+    _check_eq(tm.current_phase, Phase.SHOOTING, "advanced to Shooting")
+    _check_eq(tm.state, TurnManager.State.IN_PHASE, "Shooting begun automatically")
+    _check_eq(f.activation.get_activated_squads(), [], "activation record cleared for the new phase")
+    _free_activation_fixture(f)
+
+
+func test_player_without_squads_does_not_block_opponent() -> void:
+    var f := _activation_fixture(3, 1)
+    var battle: BattleState = f.battle
+    var players := []
+    for id in _complete_phase(f.activation, battle, f.tm):
+        players.append(battle.get_squad(id).get_player())
+    _check_eq(players, [P1, P2, P1, P1], "Player 1 continues after Player 2 runs out")
+    _check_eq(f.tm.current_phase, Phase.SHOOTING, "phase advanced")
+    _free_activation_fixture(f)
+
+
+func test_full_progression_through_all_phases() -> void:
+    var f := _activation_fixture(1, 1)
+    var tm: TurnManager = f.tm
+    var phases := []
+    tm.phase_started.connect(func(phase, _turn, _priority): phases.append(phase))
+    for i in 3:
+        _complete_phase(f.activation, f.battle, tm)
+    _check_eq(phases, [Phase.SHOOTING, Phase.ASSAULT, Phase.MORALE, Phase.MOVEMENT],
+        "Shooting, Assault, Morale (no tests, passes at once), then Movement")
+    _check_eq(tm.turn_number, 2, "new turn")
+    _check_eq(tm.current_phase, Phase.MOVEMENT, "back to Movement")
+    _free_activation_fixture(f)
+
+
+func test_new_turn_resets_activation_state() -> void:
+    var f := _activation_fixture(1, 1)
+    var activation: ActivationController = f.activation
+    var squad: SquadState = f.battle.get_squad(&"p1_0")
+    activation.activate(squad)
+    activation.end_activation()
+    _check(activation.has_activated(squad), "activated in turn 1 Movement")
+    activation.activate(f.battle.get_squad(&"p2_0"))
+    activation.end_activation()
+    for i in 2:
+        _complete_phase(activation, f.battle, f.tm)
+    _check_eq(f.tm.turn_number, 2, "turn 2")
+    _check(not activation.has_activated(squad), "squad may activate again")
+    _check_eq(activation.can_activate(squad), ActivationController.Result.OK, "activation available")
+    _free_activation_fixture(f)
+
+
+func test_movement_resets_at_turn_boundary_not_between_phases() -> void:
+    var f := _activation_fixture(1, 1)
+    var activation: ActivationController = f.activation
+    var movement: MovementController = f.movement
+    var squad: SquadState = f.battle.get_squad(&"p1_0")
+    _check_eq(movement.order_move(squad, squad.board_position + Vector2(1.0, 0.0)),
+        MovementRules.Result.NOT_ACTIVATED, "move refused before activation")
+    activation.activate(squad)
+    var start := squad.board_position
+    _check_eq(movement.order_move(squad, start + Vector2(3.0, 4.0)), MovementRules.Result.OK, "activated squad moves")
+    activation.end_activation()
+    _check_eq(movement.order_move(squad, start), MovementRules.Result.NOT_ACTIVATED, "no moves after its activation")
+    _complete_phase(activation, f.battle, f.tm)
+    _check_eq(f.tm.current_phase, Phase.SHOOTING, "in Shooting")
+    _check_eq(squad.distance_moved, 5.0, "movement tracking kept between phases")
+    _check_eq(squad.turn_start_position, start, "turn start kept between phases")
+    _complete_phase(activation, f.battle, f.tm)
+    _complete_phase(activation, f.battle, f.tm)
+    _check_eq(f.tm.turn_number, 2, "turn 2")
+    _check_eq(squad.distance_moved, 0.0, "movement reset at the new turn")
+    _check_eq(squad.turn_start_position, start + Vector2(3.0, 4.0), "turn starts where the squad stands")
+    _free_activation_fixture(f)
+
+
+func test_removed_squads_update_activation() -> void:
+    var f := _activation_fixture(2, 1)
+    var activation: ActivationController = f.activation
+    var tm: TurnManager = f.tm
+    f.battle.remove_squad(&"p1_1")
+    _check_eq(tm.get_remaining_activations(P1), 1, "waiting squad removed from the count")
+    activation.activate(f.battle.get_squad(&"p1_0"))
+    f.battle.remove_squad(&"p1_0")
+    _check_eq(activation.active_squad, null, "removing the active squad ends its activation")
+    _check_eq(activation.get_active_player(), P2, "play passes on")
+    _free_activation_fixture(f)
+
+
+func test_activation_panel_and_tokens_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var panel: ActivationPanel = main.get_node("HUD/ActivationPanel")
+    var layer: SquadLayer = main.get_node("GameBoard/Squads")
+    var selection: SelectionManager = main.get_node("SelectionManager")
+    var activation: ActivationController = main.get_node("ActivationController")
+    var p1_squad: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var p2_squad: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    _check_eq(panel.player_label.text, "Player 1 to activate", "entitled player shown")
+    _check(panel.action_button.disabled, "nothing selected, nothing to activate")
+
+    _click(layer.get_token(&"p2_raider_squad").global_position)
+    _check_eq(selection.selected_squad, p2_squad, "opponent squad selectable for inspection")
+    _check(panel.action_button.disabled, "cannot activate opponent's squad")
+    _check_eq(panel.hint_label.text, "Not Player 1's squad", "reason shown")
+
+    _click(layer.get_token(&"p1_line_squad").global_position)
+    _check(not panel.action_button.disabled, "own squad can be activated")
+    panel.action_button.pressed.emit()
+    _check(activation.is_active_squad(p1_squad), "button activates the selected squad")
+    _check_eq(panel.active_label.text, "Active: Line Squad", "active squad shown")
+    _check_eq(layer.get_token(&"p1_line_squad").activation_display, SquadToken.ActivationDisplay.ACTIVE, "token marked active")
+    _check_eq(panel.action_button.text, "End activation", "button offers to end the activation")
+
+    panel.action_button.pressed.emit()
+    _check_eq(activation.active_squad, null, "activation ended")
+    _check_eq(panel.player_label.text, "Player 2 to activate", "control passed")
+    _check_eq(panel.activated_label.text, "Done: Line Squad", "activated squads listed")
+    _check_eq(layer.get_token(&"p1_line_squad").activation_display, SquadToken.ActivationDisplay.SPENT, "token marked spent")
+    _check_eq(panel.hint_label.text, "Already activated this phase", "selected squad already spent")
     main.queue_free()
     await process_frame
 
@@ -806,9 +1037,10 @@ func test_main_scene_wiring() -> void:
     if label:
         _check_eq(label.text, "Turn 1 - Movement", "banner text")
     var tm := main.get_node("TurnManager") as TurnManager
-    for i in 4:
-        _play_phase(tm, 1, 1)
+    var activation := main.get_node("ActivationController") as ActivationController
+    for i in 3:
+        _complete_phase(activation, main.battle, tm)
     if label:
-        _check_eq(label.text, "Turn 2 - Movement", "banner text after a full turn")
+        _check_eq(label.text, "Turn 2 - Movement", "banner text after a full turn (Morale has no tests yet)")
     main.queue_free()
     await process_frame

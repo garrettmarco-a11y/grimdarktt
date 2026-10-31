@@ -1,8 +1,8 @@
 extends Node
 class_name Main
 ## Application coordinator: builds the battle state from the starting squad
-## setups, wires the turn manager, squad view, selection, movement and HUD
-## together, and starts the game.
+## setups, wires the turn manager, activation, squad view, selection, movement
+## and HUD together, and starts the game.
 
 ## Squads placed on the battlefield at the start of the game.
 @export var squad_setups: Array[SquadSetup] = []
@@ -15,6 +15,7 @@ var battle := BattleState.new()
 @onready var turn_manager: TurnManager = $TurnManager
 @onready var selection: SelectionManager = $SelectionManager
 @onready var movement: MovementController = $MovementController
+@onready var activation: ActivationController = $ActivationController
 @onready var hud: HUD = $HUD
 
 
@@ -23,10 +24,13 @@ func _ready() -> void:
         battle.add_squad(SquadState.new(setup.squad, setup.start_position))
     squad_layer.bind_battle(battle)
     selection.bind_battle(battle)
+    activation.bind(battle, turn_manager)
     movement.bind(battle, turn_manager, game_board.board_size)
+    movement.activation = activation
     hud.bind_turn_manager(turn_manager)
     hud.bind_selection(selection)
     hud.bind_movement(movement)
+    hud.bind_activation(activation, selection)
     squad_layer.squad_clicked.connect(selection.select)
     squad_layer.empty_space_clicked.connect(selection.clear_selection)
     squad_layer.destination_clicked.connect(_on_destination_clicked)
@@ -34,6 +38,7 @@ func _ready() -> void:
     selection.selection_changed.connect(movement_overlay.show_squad)
     movement.move_rejected.connect(_on_move_rejected)
     turn_manager.phase_changed.connect(_on_phase_changed)
+    activation.activation_changed.connect(_on_activation_changed)
     turn_manager.start_game()
 
 
@@ -47,3 +52,7 @@ func _on_move_rejected(_state: SquadState, destination: Vector2, _result: Moveme
 
 func _on_phase_changed(phase: TurnManager.Phase, _turn: int) -> void:
     movement_overlay.set_orders_enabled(phase == TurnManager.Phase.MOVEMENT)
+
+
+func _on_activation_changed() -> void:
+    squad_layer.show_activation(activation.active_squad, activation.get_activated_squads())
