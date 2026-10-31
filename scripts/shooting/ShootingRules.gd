@@ -13,7 +13,7 @@ class_name ShootingRules
 ##   - The model needs line of sight to a target model that is in range.
 ##   - Each attack rolls one D6 and hits on a roll >= the firer's Quality.
 
-enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD }
+enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING }
 enum Eligibility { ELIGIBLE, NO_RANGED_WEAPON, OUT_OF_RANGE, NO_LINE_OF_SIGHT }
 
 ## Tolerance for range comparisons, in board units.
@@ -43,11 +43,11 @@ static func in_range(weapon: WeaponProfile, distance: float) -> bool:
     return distance <= weapon.range + EPSILON
 
 
-## Board positions of the target's models, or its anchor if it lists none.
+## Board positions of the target's living models, or its anchor if it lists none.
 static func target_points(target: SquadState) -> Array[Vector2]:
     var points: Array[Vector2] = []
-    for i in target.get_model_count():
-        points.append(target.get_model_position(i))
+    for model in target.get_living_models():
+        points.append(target.get_model_position(model))
     if points.is_empty():
         points.append(target.board_position)
     return points
@@ -88,7 +88,8 @@ static func is_hit(roll: int, quality: int) -> bool:
     return roll >= quality
 
 
-## Resolves shooting from every model in `firing` at `target`.
+## Resolves hits from every living model in `firing` at `target`. Wounds and
+## saves are rolled separately by DamageRules.
 static func resolve(firing: SquadState, target: SquadState, los: LineOfSight,
         dice: DiceRoller) -> ShootingResult:
     var result := ShootingResult.new()
@@ -96,12 +97,11 @@ static func resolve(firing: SquadState, target: SquadState, los: LineOfSight,
     result.target_squad = target
     var targets := target_points(target)
     var quality := firing.data.profile.quality if firing.data.profile else 0
-    for i in firing.get_model_count():
-        var model := firing.data.models[i]
-        var model_result := evaluate_model(model.model_name, model.weapon,
-            firing.get_model_position(i), targets, los)
+    for model in firing.get_living_models():
+        var model_result := evaluate_model(model.get_model_name(), model.get_weapon(),
+            firing.get_model_position(model), targets, los)
         if model_result.is_eligible():
-            model_result.rolls = roll_attacks(model.weapon.attacks, dice)
+            model_result.rolls = roll_attacks(model.get_weapon().attacks, dice)
             for roll in model_result.rolls:
                 if is_hit(roll, quality):
                     model_result.hits += 1

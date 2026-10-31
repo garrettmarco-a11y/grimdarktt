@@ -10,8 +10,9 @@ class_name ActivationController
 ##
 ## Eligibility (approved by the project lead):
 ##   - Movement, Shooting and Assault: every squad on the battlefield.
-##   - Morale: only squads that lost models or lost an assault. Nothing can do
-##     either yet, so no squad is eligible and the phase passes straight away.
+##   - Morale: only squads that lost models (or, later, lost an assault) since
+##     their last Morale activation. A squad's loss flag clears when its Morale
+##     activation ends. With no eligible squads the phase passes straight away.
 
 signal activation_changed
 
@@ -19,6 +20,12 @@ enum Result { OK, NO_SQUAD, NOT_IN_PHASE, ACTIVATION_IN_PROGRESS, WRONG_PLAYER, 
 
 ## The squad currently activated, or null.
 var active_squad: SquadState = null
+## While true the active squad's activation cannot be ended by the player,
+## e.g. while the defender allocates wounds from its shooting.
+var locked := false:
+    set(value):
+        locked = value
+        activation_changed.emit()
 
 var _battle: BattleState
 var _turn_manager: TurnManager
@@ -34,8 +41,10 @@ func bind(battle: BattleState, turn_manager: TurnManager) -> void:
     turn_manager.activation_ended.connect(_on_turn_manager_activation_ended)
 
 
-static func is_eligible(_state: SquadState, phase: TurnManager.Phase) -> bool:
-    return phase != TurnManager.Phase.MORALE
+static func is_eligible(state: SquadState, phase: TurnManager.Phase) -> bool:
+    if phase == TurnManager.Phase.MORALE:
+        return state.lost_models_since_morale
+    return true
 
 
 ## The player entitled to activate next (or activating now), or NO_PLAYER.
@@ -95,6 +104,8 @@ func end_activation() -> bool:
     if active_squad == null:
         push_error("ActivationController.end_activation: no squad is activated")
         return false
+    if locked:
+        return false
     var ended := _turn_manager.end_activation()
     # TurnManager emits activation_ended before choosing the next player, so
     # report the change only once the hand-over is complete.
@@ -102,9 +113,11 @@ func end_activation() -> bool:
     return ended
 
 
-func _on_turn_manager_activation_ended(_player: int, _phase: TurnManager.Phase) -> void:
+func _on_turn_manager_activation_ended(_player: int, phase: TurnManager.Phase) -> void:
     if active_squad:
         _activated[active_squad.squad_id] = true
+        if phase == TurnManager.Phase.MORALE:
+            active_squad.clear_morale_losses()
         active_squad = null
 
 

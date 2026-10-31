@@ -16,13 +16,19 @@ var _failures: Array[String] = []
 
 
 ## Dice that return a fixed sequence of rolls, for deterministic tests.
+## Running out of scripted rolls fails the current test.
 class ScriptedDice extends DiceRoller:
+    static var exhausted_count := 0
     var rolls: Array[int] = []
 
     func _init(values: Array[int]) -> void:
         rolls = values.duplicate()
 
     func roll_d6() -> int:
+        if rolls.is_empty():
+            exhausted_count += 1
+            push_error("ScriptedDice: no scripted rolls left")
+            return 1
         return rolls.pop_front()
 
 
@@ -39,7 +45,10 @@ func _run_all() -> void:
             continue
         test_count += 1
         var failures_before := _failures.size()
+        var exhausted_before := ScriptedDice.exhausted_count
         await call(method_name)
+        if ScriptedDice.exhausted_count != exhausted_before:
+            _failures.append("ScriptedDice ran out of scripted rolls")
         if _failures.size() == failures_before:
             print("PASS  %s" % method_name)
         else:
@@ -1005,18 +1014,24 @@ func _make_weapon(weapon_range: float, attacks: int) -> WeaponProfile:
 
 
 ## A squad whose models are given as [name, weapon or null, offset] entries.
+## Temporary fixture values, not game balance data.
 func _make_shooter(squad_id: StringName, player: int, position: Vector2, models: Array,
-        quality := 4) -> SquadState:
-    var state := _make_state(squad_id, player, position)
-    state.data.profile.quality = quality
-    state.data.profile.movement = 6.0
+        quality := 4, wounds := 1) -> SquadState:
+    var squad := SquadData.new()
+    squad.squad_id = squad_id
+    squad.display_name = String(squad_id)
+    squad.player = player
+    squad.profile = UnitProfile.new()
+    squad.profile.quality = quality
+    squad.profile.movement = 6.0
+    squad.profile.wounds = wounds
     for entry in models:
         var model := SquadModel.new()
         model.model_name = entry[0]
         model.weapon = entry[1]
         model.formation_offset = entry[2]
-        state.data.models.append(model)
-    return state
+        squad.models.append(model)
+    return SquadState.new(squad, position)
 
 
 func test_placeholder_weapons_differ() -> void:
@@ -1141,7 +1156,8 @@ func _shooting_fixture(extra_p1 := false) -> Dictionary:
     var activation := ActivationController.new()
     activation.bind(battle, tm)
     var shooting := ShootingController.new()
-    shooting.bind(tm, activation)
+    shooting.bind(tm, activation, battle)
+    # Rifles (S0) against T0 wound on 2+; neither squad has an armor save.
     shooting.dice = ScriptedDice.new([6, 6, 6, 6, 6, 6])
     tm.start_game()
     return {"battle": battle, "tm": tm, "activation": activation, "shooting": shooting}
@@ -1206,10 +1222,15 @@ func test_shooting_spends_activation_and_passes_control() -> void:
     var p2: SquadState = f.battle.get_squad(&"p2_a")
     var results := []
     f.shooting.shot_resolved.connect(func(r): results.append(r))
+    # Player 2's squad saves on 4+: hit 6, wound 6, save 4. Player 1's squad has
+    # no save: hit 6, wound 6.
+    p2.data.profile.armor_save = 4
+    f.shooting.dice = ScriptedDice.new([6, 6, 4, 6, 6])
     f.activation.activate(p1)
     _check_eq(f.shooting.order_shot(p1, p2), ShootingRules.OrderResult.OK, "shot accepted")
     _check_eq(results.size(), 1, "result reported")
     _check_eq(results[0].get_hits(), 1, "rifle hit on a 6")
+    _check_eq(results[0].get_saves(), 1, "wound saved")
     _check(f.activation.has_activated(p1), "activation spent")
     _check_eq(f.activation.active_squad, null, "no squad active")
     _check_eq(f.activation.get_active_player(), P2, "control passes to Player 2")
@@ -1217,6 +1238,11 @@ func test_shooting_spends_activation_and_passes_control() -> void:
     _check_eq(f.activation.activate(p1), ActivationController.Result.ALREADY_ACTIVATED, "cannot reactivate")
     f.activation.activate(p2)
     _check_eq(f.shooting.order_shot(p2, p1), ShootingRules.OrderResult.OK, "Player 2 shoots back")
+    _check(f.shooting.is_allocation_pending(), "unsaved wound awaits Player 1's allocation")
+    _check(f.activation.is_active_squad(p2), "Player 2's activation held open")
+    f.shooting.allocate_wound(0)
+    _check_eq(f.battle.get_squad(&"p1_a"), null, "Player 1's single model removed, squad destroyed")
+    _check_eq(f.activation.active_squad, null, "Player 2's activation completed")
     _check_eq(f.tm.current_phase, Phase.ASSAULT, "phase advances once both have shot")
     _free_shooting_fixture(f)
 
@@ -1246,7 +1272,9 @@ func test_shooting_in_main_scene() -> void:
     var panel: ActivationPanel = main.get_node("HUD/ActivationPanel")
     var feedback: Label = main.get_node("HUD/OrderFeedback")
     var tm: TurnManager = main.get_node("TurnManager")
-    shooting.dice = ScriptedDice.new([1, 4, 6, 3, 5])
+    # Hits: Trooper rifle 1 (miss); Gunner heavy gun 4, 6, 3 (2 hits on Q4).
+    # Wounds: heavy gun S5 vs T3 needs 3+: 5, 2 (1 wound). Save: 5+ with AP1 is 6+: 3 (fails).
+    shooting.dice = ScriptedDice.new([1, 4, 6, 3, 5, 2, 3])
     _complete_phase(activation, main.battle, tm)
     _check_eq(tm.current_phase, Phase.SHOOTING, "Shooting phase")
     var line: SquadState = main.battle.get_squad(&"p1_line_squad")
@@ -1261,8 +1289,26 @@ func test_shooting_in_main_scene() -> void:
     _check_eq(panel.hint_label.text, "Right-click an enemy squad to shoot", "targeting prompt shown")
     _right_click(layer.get_token(&"p1_line_squad").global_position)
     _check_eq(feedback.text, "Cannot shoot your own squad", "own squad refused")
+    var allocation: AllocationPanel = main.get_node("HUD/AllocationPanel")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    _check(not allocation.visible, "allocation panel hidden before shooting")
     _right_click(raider_token.global_position)
+    _check(allocation.visible, "defender asked to allocate the unsaved wound")
+    _check_eq(allocation.title_label.text, "Player 2: allocate 1 wound to Raider Squad", "allocation prompt")
+    _check_eq(allocation.model_buttons.get_child_count(), 3, "one button per living Raider")
+    _check(activation.is_active_squad(line), "shooter's activation held open")
+    _check(panel.action_button.disabled, "cannot end the activation mid-allocation")
+    _check_eq(panel.hint_label.text, "Waiting for wound allocation", "waiting shown")
+    allocation.get_button(1).pressed.emit()
+    _check(not allocation.visible, "allocation finished")
+    _check(raider.get_model(1).removed, "the chosen Raider is the casualty")
+    _check_eq(raider.get_model_count(), 2, "two Raiders left")
+    _check_eq(raider_token.model_offsets.size(), 2, "token no longer draws the casualty")
     _check(feedback.text.begins_with("Line Squad shot Raider Squad"), "result shown")
+    _check(feedback.text.contains("Wounds 1: 0 saved, 1 unsaved"), "wounds and saves summarised")
+    _check(feedback.text.contains("Gunner: 2/3 hit, 1 wnd (3+), 0 saved (6+)"), "Gunner's wound and save detail")
+    _check(feedback.text.contains("Casualties: Raider"), "casualty named")
+    _check(feedback.text.contains("Raider Squad: 2 models left"), "models remaining")
     # The Sergeant's pistol (12) is out of range, and so is one Trooper: same
     # rifle as the other Trooper, but standing 24.2 from the nearest Raider.
     _check(feedback.text.contains("Fired: 2  Unable: 2"), "per-model eligibility counted")
@@ -1276,6 +1322,535 @@ func test_shooting_in_main_scene() -> void:
     await process_frame
 
 
+func test_wound_target_table() -> void:
+    _check_eq(DamageRules.wound_target(6, 3), 2, "S double T: 2+")
+    _check_eq(DamageRules.wound_target(8, 3), 2, "S more than double T: 2+")
+    _check_eq(DamageRules.wound_target(5, 3), 3, "S greater than T: 3+")
+    _check_eq(DamageRules.wound_target(4, 4), 4, "S equals T: 4+")
+    _check_eq(DamageRules.wound_target(3, 4), 5, "S lower than T: 5+")
+    _check_eq(DamageRules.wound_target(3, 5), 5, "S lower, but more than half T: 5+")
+    _check_eq(DamageRules.wound_target(2, 4), 6, "S half T: 6+")
+    _check_eq(DamageRules.wound_target(2, 5), 6, "S less than half T: 6+")
+
+
+func test_wound_rolls() -> void:
+    _check(DamageRules.is_wound(4, 4), "roll equal to target wounds")
+    _check(DamageRules.is_wound(6, 3), "roll above target wounds")
+    _check(not DamageRules.is_wound(3, 4), "roll below target fails")
+    _check(not DamageRules.is_wound(1, 2), "natural 1 fails even against 2+")
+    _check(DamageRules.is_wound(2, 2), "2 wounds on 2+")
+
+
+func test_armor_save_targets_and_rolls() -> void:
+    _check_eq(DamageRules.save_target(4, 0), 4, "unmodified 4+")
+    _check_eq(DamageRules.save_target(4, 1), 5, "AP1 turns 4+ into 5+")
+    _check_eq(DamageRules.save_target(5, 2), 7, "AP2 turns 5+ into 7+")
+    _check_eq(DamageRules.save_target(0, 1), 0, "no armor save")
+    _check(DamageRules.is_saved(4, 4), "4 saves on 4+")
+    _check(not DamageRules.is_saved(3, 4), "3 fails a 4+ save")
+    _check(DamageRules.is_saved(6, 6), "6 saves on 6+")
+    _check(not DamageRules.can_be_saved(7), "7+ cannot be saved")
+    _check(not DamageRules.is_saved(6, 7), "even a 6 fails a 7+ save")
+    _check(not DamageRules.is_saved(1, 2), "natural 1 fails even a 2+ save")
+    _check(not DamageRules.is_saved(6, 0), "no save, no saving")
+
+
+func test_wounds_and_saves_resolution() -> void:
+    var firing := _make_shooter(&"f", P1, Vector2(10.0, 10.0), [["Gun", _make_weapon(24.0, 4), Vector2.ZERO]])
+    firing.data.models[0].weapon.strength = 4
+    firing.data.models[0].weapon.armor_piercing = 1
+    var target := _make_shooter(&"t", P2, Vector2(20.0, 10.0), [["T", null, Vector2.ZERO]])
+    target.data.profile.toughness = 4
+    target.data.profile.armor_save = 3
+    var dice := ScriptedDice.new([6, 6, 6, 2, 4, 1, 5, 4, 3])
+    var result := ShootingRules.resolve(firing, target, LineOfSight.new(), dice)
+    _check_eq(result.get_hits(), 3, "hits 6, 6, 6; 2 misses on Q4")
+    DamageRules.resolve_wounds_and_saves(result, dice)
+    var model := result.model_results[0]
+    _check_eq(model.wound_target, 4, "S4 vs T4: 4+")
+    _check_eq(model.wound_rolls, [4, 1, 5], "one wound roll per hit")
+    _check_eq(model.wounds, 2, "4 and 5 wound, natural 1 fails")
+    _check_eq(model.save_target, 4, "3+ save with AP1: 4+")
+    _check_eq(model.save_rolls, [4, 3], "one save roll per wound")
+    _check_eq(model.saves, 1, "4 saves, 3 fails")
+    _check_eq(result.get_unsaved_wounds(), 1, "one unsaved wound")
+    _check(dice.rolls.is_empty(), "every scripted roll used")
+
+
+func test_unsavable_wounds_roll_no_saves() -> void:
+    var firing := _make_shooter(&"f", P1, Vector2(10.0, 10.0), [["Gun", _make_weapon(24.0, 1), Vector2.ZERO]])
+    firing.data.models[0].weapon.strength = 3
+    firing.data.models[0].weapon.armor_piercing = 3
+    var target := _make_shooter(&"t", P2, Vector2(20.0, 10.0), [["T", null, Vector2.ZERO]])
+    target.data.profile.toughness = 3
+    target.data.profile.armor_save = 5
+    var dice := ScriptedDice.new([6, 6])
+    var result := ShootingRules.resolve(firing, target, LineOfSight.new(), dice)
+    DamageRules.resolve_wounds_and_saves(result, dice)
+    _check_eq(result.model_results[0].save_target, 8, "5+ with AP3 is 8+")
+    _check_eq(result.model_results[0].save_rolls, [], "no save rolled when none can succeed")
+    _check_eq(result.get_unsaved_wounds(), 1, "wound goes through")
+
+
+func test_successful_saves_prevent_damage() -> void:
+    var f := _shooting_fixture()
+    _to_shooting(f)
+    var p1: SquadState = f.battle.get_squad(&"p1_a")
+    var p2: SquadState = f.battle.get_squad(&"p2_a")
+    p2.data.profile.armor_save = 4
+    f.shooting.dice = ScriptedDice.new([6, 6, 5])
+    var results := []
+    f.shooting.shot_resolved.connect(func(r): results.append(r))
+    f.activation.activate(p1)
+    f.shooting.order_shot(p1, p2)
+    _check(not f.shooting.is_allocation_pending(), "saved wound needs no allocation")
+    _check_eq(results[0].get_saves(), 1, "save made on a 5")
+    _check_eq(p2.get_model(0).wounds_remaining, 1, "no damage taken")
+    _check(not p2.lost_models_since_morale, "no loss recorded")
+    _check(f.activation.has_activated(p1), "activation spent")
+    _free_shooting_fixture(f)
+
+
+func test_model_states_built_from_data() -> void:
+    var line: SquadData = load("res://data/squads/p1_line_squad.tres")
+    var state := SquadState.new(line, Vector2(12.0, 16.0))
+    var models := state.get_models()
+    _check_eq(models.size(), 4, "one model state per model")
+    for i in models.size():
+        _check_eq(models[i].model_id, i, "model %d id is its original index" % i)
+        _check_eq(models[i].definition, line.models[i], "model %d references its definition" % i)
+        _check_eq(models[i].wounds_remaining, line.profile.wounds, "model %d starts with the profile's W" % i)
+        _check(not models[i].removed, "model %d alive" % i)
+    _check_eq(state.get_leader(), models[0], "first model is the leader")
+    _check_eq(state.get_model_position(models[1]), Vector2(12.0, 16.0) + line.models[1].formation_offset,
+        "model position from the formation offset")
+    print("        (the next error is expected)")
+    models[2].model_id = 9
+    _check_eq(models[2].model_id, 2, "model id cannot be reassigned")
+
+
+func test_damage_tracking_leaves_resources_untouched() -> void:
+    var squad := _make_shooter(&"s", P1, Vector2(5.0, 5.0), [["A", null, Vector2.ZERO], ["B", null, Vector2(1.0, 0.0)]],
+        4, 2).data
+    var first := SquadState.new(squad, Vector2(5.0, 5.0))
+    var second := SquadState.new(squad, Vector2(5.0, 5.0))
+    first.take_wound(1)
+    _check_eq(first.get_model(1).wounds_remaining, 1, "damage tracked on the model state")
+    _check_eq(second.get_model(1).wounds_remaining, 2, "another state built from the same data is unaffected")
+    _check_eq(squad.profile.wounds, 2, "profile Wounds unchanged")
+    _check_eq(squad.models.size(), 2, "data model list unchanged")
+    _check_eq(squad.models[1].formation_offset, Vector2(1.0, 0.0), "definition unchanged")
+
+
+func test_models_removed_at_zero_wounds() -> void:
+    var state := _make_shooter(&"s", P1, Vector2(5.0, 5.0),
+        [["A", null, Vector2.ZERO], ["B", null, Vector2(1.0, 0.0)], ["C", null, Vector2(2.0, 0.0)]], 4, 2)
+    var changes := []
+    state.models_changed.connect(func(s): changes.append(s.squad_id))
+    _check(not state.take_wound(1), "first wound only damages")
+    _check_eq(state.get_model(1).wounds_remaining, 1, "one wound left")
+    _check(not state.lost_models_since_morale, "no model lost yet")
+    _check(state.take_wound(1), "second wound removes the model")
+    _check(state.get_model(1).removed, "model removed")
+    _check_eq(state.get_model(1).wounds_remaining, 0, "no wounds left")
+    _check_eq(state.get_model_count(), 2, "two living models")
+    _check_eq(state.get_living_models().map(func(m): return m.model_id), [0, 2], "living models in original order")
+    _check_eq(state.get_models().size(), 3, "removed models are kept, by id")
+    _check(state.lost_models_since_morale, "loss recorded")
+    _check_eq(changes.size(), 2, "models_changed emitted per wound")
+    print("        (the next error is expected)")
+    _check(not state.take_wound(1), "a removed model cannot take further wounds")
+
+
+func test_allocation_rules() -> void:
+    var state := _make_shooter(&"s", P2, Vector2(5.0, 5.0), [["A", null, Vector2.ZERO], ["B", null, Vector2(1.0, 0.0)]])
+    _check_eq(DamageRules.validate_allocation(state, 0, 2), DamageRules.AllocationResult.OK, "leader allowed")
+    _check_eq(DamageRules.validate_allocation(state, 1, 2), DamageRules.AllocationResult.OK, "any living model allowed")
+    _check_eq(DamageRules.validate_allocation(state, 5, 2), DamageRules.AllocationResult.UNKNOWN_MODEL, "unknown id")
+    _check_eq(DamageRules.validate_allocation(state, 0, 0), DamageRules.AllocationResult.NO_PENDING_WOUNDS, "nothing to allocate")
+    state.take_wound(1)
+    _check_eq(DamageRules.validate_allocation(state, 1, 1), DamageRules.AllocationResult.MODEL_REMOVED, "removed model refused")
+
+
+## Shooter fixture whose target has `models` with `wounds` each, and a rifle
+## that hits, wounds and goes unsaved on every roll of 6.
+func _allocation_fixture(target_models: Array, wounds: int, attacks: int) -> Dictionary:
+    var battle := BattleState.new()
+    battle.add_squad(_make_shooter(&"p1_a", P1, Vector2(10.0, 10.0), [["Gun", _make_weapon(24.0, attacks), Vector2.ZERO]]))
+    battle.add_squad(_make_shooter(&"p2_a", P2, Vector2(20.0, 10.0), target_models, 4, wounds))
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var shooting := ShootingController.new()
+    shooting.bind(tm, activation, battle)
+    var rolls: Array[int] = []
+    for i in attacks * 2:
+        rolls.append(6)
+    shooting.dice = ScriptedDice.new(rolls)
+    tm.start_game()
+    var f := {"battle": battle, "tm": tm, "activation": activation, "shooting": shooting}
+    _to_shooting(f)
+    activation.activate(battle.get_squad(&"p1_a"))
+    return f
+
+
+func test_defender_allocates_wounds_freely() -> void:
+    var f := _allocation_fixture([["A", null, Vector2.ZERO], ["B", null, Vector2(1.0, 0.0)], ["C", null, Vector2(0.0, 1.0)]], 2, 4)
+    var shooting: ShootingController = f.shooting
+    var target: SquadState = f.battle.get_squad(&"p2_a")
+    var prompts := []
+    shooting.allocation_required.connect(func(_r, left): prompts.append(left))
+    shooting.order_shot(f.battle.get_squad(&"p1_a"), target)
+    _check_eq(prompts, [4], "four unsaved wounds to allocate")
+    _check_eq(shooting.allocate_wound(2), DamageRules.AllocationResult.OK, "wound on model C")
+    _check_eq(target.get_model(2).wounds_remaining, 1, "C wounded")
+    _check_eq(shooting.allocate_wound(0), DamageRules.AllocationResult.OK, "next wound elsewhere: no need to finish C")
+    _check_eq(shooting.allocate_wound(2), DamageRules.AllocationResult.OK, "wounded C takes another wound")
+    _check(target.get_model(2).removed, "C removed")
+    _check_eq(shooting.allocate_wound(2), DamageRules.AllocationResult.MODEL_REMOVED, "removed C refused")
+    _check_eq(shooting.get_wounds_left(), 1, "refused allocation keeps the wound pending")
+    _check_eq(shooting.allocate_wound(1), DamageRules.AllocationResult.OK, "last wound on B")
+    _check_eq(prompts, [4, 3, 2, 1], "prompted after each allocation")
+    _check(not shooting.is_allocation_pending(), "all allocated")
+    _check_eq([target.get_model(0).wounds_remaining, target.get_model(1).wounds_remaining], [1, 1], "A and B wounded")
+    _check_eq(f.activation.active_squad, null, "shooter's activation ended")
+    _free_shooting_fixture(f)
+
+
+func test_allocation_holds_the_activation() -> void:
+    var f := _allocation_fixture([["A", null, Vector2.ZERO], ["B", null, Vector2(1.0, 0.0)]], 1, 1)
+    var shooter: SquadState = f.battle.get_squad(&"p1_a")
+    var target: SquadState = f.battle.get_squad(&"p2_a")
+    f.shooting.order_shot(shooter, target)
+    _check(f.activation.locked, "activation locked while the defender allocates")
+    _check(not f.activation.end_activation(), "activation cannot be ended early")
+    _check_eq(f.shooting.order_shot(shooter, target), ShootingRules.OrderResult.ALLOCATION_PENDING, "no second shot")
+    f.shooting.allocate_wound(1)
+    _check(not f.activation.locked, "unlocked after allocation")
+    _check(f.activation.has_activated(shooter), "activation spent")
+    _check_eq(f.activation.get_active_player(), P2, "control passes to the defender")
+    _free_shooting_fixture(f)
+
+
+func test_leader_succession_keeps_positions_and_movement() -> void:
+    var state := _make_shooter(&"s", P1, Vector2(10.0, 10.0),
+        [["Leader", null, Vector2.ZERO], ["Second", null, Vector2(2.0, 0.0)], ["Third", null, Vector2(0.0, 3.0)]])
+    _check_eq(state.get_leader().get_model_name(), "Leader", "first model leads")
+    state.begin_turn_movement(6.0)
+    state.apply_move(Vector2(13.0, 14.0), false)
+    var second_world := state.get_model_position(state.get_model(1))
+    var third_world := state.get_model_position(state.get_model(2))
+    var moved := state.distance_moved
+    state.take_wound(0)
+    _check_eq(state.get_leader(), state.get_model(1), "next surviving model promoted")
+    _check_eq(state.board_position, second_world, "anchor moves to the new leader")
+    _check_eq(state.get_model(1).offset, Vector2.ZERO, "new leader sits on the anchor")
+    _check_eq(state.get_model_position(state.get_model(1)), second_world, "new leader has not moved")
+    _check_eq(state.get_model_position(state.get_model(2)), third_world, "other survivor has not moved")
+    _check(is_equal_approx(state.distance_moved, moved), "distance moved this turn unchanged")
+    _check_eq(state.turn_start_position, Vector2(12.0, 10.0), "turn start is where the new leader began the turn")
+    _check_eq(state.movement_allowance, 6.0, "allowance unchanged")
+    _check_eq(state.get_leader_profile().movement, 6.0, "movement read from the leader's profile")
+    state.take_wound(1)
+    _check_eq(state.get_leader(), state.get_model(2), "succession continues in original order")
+    _check_eq(state.board_position, third_world, "anchor follows again")
+    state.take_wound(2)
+    _check(state.is_destroyed(), "no models left: destroyed")
+    _check_eq(state.get_leader(), null, "no leader promoted")
+    _check_eq(state.board_position, third_world, "anchor left where the last model fell")
+
+
+func test_new_leader_governs_movement() -> void:
+    var f := _activation_fixture(1, 1)
+    var battle: BattleState = f.battle
+    battle.remove_squad(&"p1_0")
+    var squad := _make_shooter(&"p1_mover", P1, Vector2(10.0, 10.0),
+        [["Leader", null, Vector2.ZERO], ["Second", null, Vector2(2.0, 0.0)]])
+    battle.add_squad(squad)
+    squad.take_wound(0)
+    for i in 4:
+        if f.tm.turn_number == 1:
+            _complete_phase(f.activation, battle, f.tm)
+    _check_eq(f.tm.turn_number, 2, "turn 2 (after the squad's Morale activation)")
+    _check_eq(squad.movement_allowance, squad.get_leader_profile().movement, "allowance from the new leader's M")
+    _check_eq(squad.turn_start_position, Vector2(12.0, 10.0), "turn starts at the new leader's position")
+    f.activation.activate(squad)
+    _check_eq(f.movement.order_move(squad, Vector2(18.5, 10.0)), MovementRules.Result.OUT_OF_RANGE, "beyond M is refused")
+    _check_eq(f.movement.order_move(squad, Vector2(18.0, 10.0)), MovementRules.Result.OK, "6 from the new leader is allowed")
+    _free_activation_fixture(f)
+
+
+func test_destroyed_squad_removed_through_battle() -> void:
+    var f := _allocation_fixture([["A", null, Vector2.ZERO], ["B", null, Vector2(1.0, 0.0)]], 1, 3)
+    var battle: BattleState = f.battle
+    var tm: TurnManager = f.tm
+    var shooter: SquadState = battle.get_squad(&"p1_a")
+    var target: SquadState = battle.get_squad(&"p2_a")
+    var removed := []
+    battle.squad_removed.connect(func(s): removed.append(s))
+    var results := []
+    f.shooting.shot_resolved.connect(func(r): results.append(r))
+    _check_eq(tm.get_remaining_activations(P2), 1, "defender's activation still waiting")
+    f.shooting.order_shot(shooter, target)
+    f.shooting.allocate_wound(0)
+    f.shooting.allocate_wound(1)
+    _check_eq(removed, [target], "removed through BattleState")
+    _check_eq(battle.get_squad(&"p2_a"), null, "gone from the battle")
+    _check_eq(results[0].wasted_wounds, 1, "third wound had no model left")
+    _check(results[0].target_destroyed, "result reports the destruction")
+    _check_eq(results[0].get_casualties(), PackedStringArray(["A", "B"]), "casualties in order")
+    _check_eq(f.activation.active_squad, null, "shooter completed its activation")
+    _check_eq(tm.current_phase, Phase.ASSAULT, "defender's activation removed, so the phase ends")
+    _free_shooting_fixture(f)
+
+
+func test_morale_eligibility_follows_losses() -> void:
+    var battle := BattleState.new()
+    var hurt := _make_shooter(&"p1_hurt", P1, Vector2(5.0, 5.0), [["A", null, Vector2.ZERO], ["B", null, Vector2(1.0, 0.0)]])
+    var fresh := _make_shooter(&"p2_fresh", P2, Vector2(30.0, 5.0), [["C", null, Vector2.ZERO]])
+    battle.add_squad(hurt)
+    battle.add_squad(fresh)
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    tm.start_game()
+    _check(not ActivationController.is_eligible(hurt, Phase.MORALE), "no losses: not eligible for Morale")
+    hurt.take_wound(1)
+    _check(ActivationController.is_eligible(hurt, Phase.MORALE), "lost a model: eligible for Morale")
+    _check(not ActivationController.is_eligible(fresh, Phase.MORALE), "untouched squad: not eligible")
+    for i in 3:
+        _complete_phase(activation, battle, tm)
+    _check(hurt.lost_models_since_morale, "flag kept through the turn until Morale")
+    _check_eq(tm.current_phase, Phase.MORALE, "Morale phase held for the eligible squad")
+    _check_eq(tm.get_remaining_activations(P1), 1, "one Morale activation for Player 1")
+    _check_eq(tm.get_remaining_activations(P2), 0, "none for Player 2")
+    _check_eq(activation.activate(fresh), ActivationController.Result.WRONG_PLAYER, "only Player 1 acts")
+    activation.activate(hurt)
+    _check(hurt.lost_models_since_morale, "flag kept during its Morale activation")
+    activation.end_activation()
+    _check(not hurt.lost_models_since_morale, "flag cleared once its Morale opportunity is resolved")
+    _check_eq(tm.turn_number, 2, "turn advances after Morale")
+    tm.free()
+    activation.free()
+
+
+func test_hud_shooting_report() -> void:
+    var firing := _make_shooter(&"Shooters", P1, Vector2.ZERO, [])
+    var target := _make_shooter(&"Targets", P2, Vector2.ZERO, [["T", null, Vector2.ZERO]])
+    var result := ShootingResult.new()
+    result.firing_squad = firing
+    result.target_squad = target
+    var gunner := ShootingResult.ModelResult.new()
+    gunner.model_name = "Gunner"
+    gunner.eligibility = ShootingRules.Eligibility.ELIGIBLE
+    gunner.rolls = [5, 2]
+    gunner.hits = 1
+    gunner.wound_target = 3
+    gunner.wound_rolls = [4]
+    gunner.wounds = 1
+    gunner.save_target = 7
+    var idle := ShootingResult.ModelResult.new()
+    idle.model_name = "Pistol"
+    idle.eligibility = ShootingRules.Eligibility.OUT_OF_RANGE
+    result.model_results = [gunner, idle]
+    var allocation := ShootingResult.Allocation.new()
+    allocation.model_name = "T"
+    allocation.removed = true
+    result.allocations = [allocation]
+    result.target_destroyed = true
+    _check_eq(HUD.format_shooting_result(result), "\n".join([
+        "Shooters shot Targets",
+        "Fired: 1  Unable: 1",
+        "Attacks 2: 1 hit, 1 miss",
+        "Wounds 1: 0 saved, 1 unsaved",
+        "Gunner: 1/2 hit, 1 wnd (3+), 0 saved (7+, unsavable)",
+        "Pistol: out of range",
+        "Casualties: T",
+        "Targets destroyed",
+    ]), "full report")
+
+
+func test_target_destroyed_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var layer: SquadLayer = main.get_node("GameBoard/Squads")
+    var activation: ActivationController = main.get_node("ActivationController")
+    var shooting: ShootingController = main.get_node("ShootingController")
+    var selection: SelectionManager = main.get_node("SelectionManager")
+    var info: SquadInfoPanel = main.get_node("HUD/SquadInfoPanel")
+    var allocation: AllocationPanel = main.get_node("HUD/AllocationPanel")
+    var feedback: Label = main.get_node("HUD/OrderFeedback")
+    var tm: TurnManager = main.get_node("TurnManager")
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    _complete_phase(activation, main.battle, tm)
+    raider.board_position = Vector2(24.0, 16.0)
+    # All six attacks hit (6s). Per model, wounds then saves: Sergeant, both
+    # Troopers: wound 6, save 2 (fails 5+); Gunner: wounds 6, 6, 6, saves 2, 2, 2
+    # (fail 6+). Six unsaved wounds against three Raiders.
+    shooting.dice = ScriptedDice.new([6, 6, 6, 6, 6, 6, 6, 2, 6, 2, 6, 2, 6, 6, 6, 2, 2, 2])
+    _click(layer.get_token(&"p2_raider_squad").global_position)
+    _check_eq(selection.selected_squad, raider, "Raider Squad selected for inspection")
+    _check(info.models_label.text.begins_with("Models 3/3"), "panel shows models remaining")
+    _check_eq(info.wounds_value.text, "1", "W column is the profile characteristic")
+    _check_eq(info.save_value.text, "5+", "armor save shown")
+    activation.activate(line)
+    shooting.order_shot(line, raider)
+    _check(allocation.visible, "allocation requested")
+    allocation.get_button(0).pressed.emit()
+    _check(info.models_label.text.begins_with("Models 2/3"), "panel follows casualties")
+    _check_eq(raider.get_leader().model_id, 1, "Raider promoted to leader")
+    allocation.get_button(1).pressed.emit()
+    allocation.get_button(2).pressed.emit()
+    _check_eq(main.battle.get_squad(&"p2_raider_squad"), null, "Raider Squad destroyed")
+    _check_eq(layer.get_token(&"p2_raider_squad"), null, "its token is gone")
+    _check_eq(selection.selected_squad, null, "selection cleared")
+    _check_eq(info.name_label.text, SquadInfoPanel.EMPTY_TEXT, "info panel cleared")
+    _check(feedback.text.contains("Raider Squad destroyed"), "destruction reported")
+    _check_eq(activation.active_squad, null, "Line Squad's activation completed")
+    _check_eq(tm.current_phase, Phase.ASSAULT, "Player 2 has nothing left, so play moves on")
+    main.queue_free()
+    await process_frame
+
+
+## A started game with `squads` and every controller bound (activation,
+## movement and shooting).
+func _battle_fixture(squads: Array) -> Dictionary:
+    var battle := BattleState.new()
+    for state in squads:
+        battle.add_squad(state)
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var movement := MovementController.new()
+    movement.bind(battle, tm, Vector2(48.0, 32.0))
+    movement.activation = activation
+    var shooting := ShootingController.new()
+    shooting.bind(tm, activation, battle)
+    tm.start_game()
+    return {"battle": battle, "tm": tm, "activation": activation, "movement": movement, "shooting": shooting}
+
+
+func _free_battle_fixture(f: Dictionary) -> void:
+    f.tm.free()
+    f.activation.free()
+    f.movement.free()
+    f.shooting.free()
+
+
+func test_morale_flags_persist_until_each_squads_morale_activation() -> void:
+    var hurt_p1 := _make_shooter(&"p1_a", P1, Vector2(5.0, 5.0), [["A", null, Vector2.ZERO], ["B", null, Vector2(1.0, 0.0)]])
+    var hurt_p2 := _make_shooter(&"p2_b", P2, Vector2(30.0, 5.0), [["C", null, Vector2.ZERO], ["D", null, Vector2(1.0, 0.0)]])
+    var fresh_p2 := _make_shooter(&"p2_c", P2, Vector2(30.0, 20.0), [["E", null, Vector2.ZERO]])
+    var f := _battle_fixture([hurt_p1, hurt_p2, fresh_p2])
+    var activation: ActivationController = f.activation
+    var tm: TurnManager = f.tm
+    hurt_p1.take_wound(1)
+    _check(hurt_p1.lost_models_since_morale, "loss in the Movement phase sets the flag")
+    _complete_phase(activation, f.battle, tm)
+    _check_eq(tm.current_phase, Phase.SHOOTING, "in Shooting")
+    _check(hurt_p1.lost_models_since_morale, "flag survives ending Movement activations, including its own")
+    hurt_p2.take_wound(1)
+    _complete_phase(activation, f.battle, tm)
+    _complete_phase(activation, f.battle, tm)
+    _check_eq(tm.current_phase, Phase.MORALE, "Morale phase held for the flagged squads")
+    _check(hurt_p1.lost_models_since_morale and hurt_p2.lost_models_since_morale,
+        "both flags survive Shooting and Assault activations")
+    _check_eq([tm.get_remaining_activations(P1), tm.get_remaining_activations(P2)], [1, 1],
+        "one Morale activation each; the unflagged squad gets none")
+    _check_eq(activation.activate(fresh_p2), ActivationController.Result.NOT_ELIGIBLE, "unflagged squad not eligible")
+    # Player 2 has more squads, so holds priority this turn and acts first.
+    _check_eq(activation.get_active_player(), P2, "Player 2 has priority in Morale")
+    _check_eq(activation.activate(hurt_p1), ActivationController.Result.WRONG_PLAYER, "p1_a waits for its turn")
+    _check_eq(activation.activate(hurt_p2), ActivationController.Result.OK, "p2_b takes its Morale activation")
+    _check(hurt_p2.lost_models_since_morale, "p2_b flag kept while its Morale activation is open")
+    activation.end_activation()
+    _check(not hurt_p2.lost_models_since_morale, "p2_b cleared after its own Morale activation")
+    _check(hurt_p1.lost_models_since_morale, "p1_a still flagged: another squad's activation does not clear it")
+    _check_eq(tm.current_phase, Phase.MORALE, "Morale continues for p1_a")
+    _check_eq(activation.activate(hurt_p1), ActivationController.Result.OK, "p1_a takes its Morale activation")
+    _check(hurt_p1.lost_models_since_morale, "p1_a flag kept while its Morale activation is open")
+    activation.end_activation()
+    _check(not hurt_p1.lost_models_since_morale, "p1_a cleared after its own Morale activation")
+    _check_eq(tm.turn_number, 2, "turn advances only after both Morale opportunities")
+    _free_battle_fixture(f)
+
+
+func test_leader_succession_after_movement() -> void:
+    var squad := _make_shooter(&"p1_m", P1, Vector2(10.0, 10.0),
+        [["Leader", null, Vector2.ZERO], ["Second", null, Vector2(2.0, 0.0)], ["Third", null, Vector2(0.0, 3.0)]])
+    var enemy := _make_shooter(&"p2_e", P2, Vector2(40.0, 25.0), [["E", null, Vector2.ZERO]])
+    var f := _battle_fixture([squad, enemy])
+    var movement: MovementController = f.movement
+    f.activation.activate(squad)
+    _check_eq(movement.order_move(squad, Vector2(13.0, 14.0)), MovementRules.Result.OK, "moved 5 of 6 this turn")
+    var survivors_before := [squad.get_model_position(squad.get_model(1)), squad.get_model_position(squad.get_model(2))]
+    var second_turn_start := Vector2(12.0, 10.0)
+    squad.take_wound(0)
+    _check_eq(squad.get_leader(), squad.get_model(1), "next model promoted")
+    _check_eq(squad.board_position, survivors_before[0], "anchor at the new leader's current position")
+    _check_eq([squad.get_model_position(squad.get_model(1)), squad.get_model_position(squad.get_model(2))],
+        survivors_before, "survivors keep their world positions")
+    _check_eq(squad.turn_start_position, second_turn_start, "turn start is where the new leader began this turn")
+    _check(is_equal_approx(squad.distance_moved, 5.0), "distance moved still 5")
+    _check(is_equal_approx(squad.get_remaining_movement(), 1.0), "1 movement left")
+    _check(not squad.movement_complete, "movement not complete")
+    _check_eq(squad.movement_allowance, 6.0, "allowance unchanged")
+    _check_eq(movement.order_move(squad, second_turn_start + Vector2(0.0, 6.1)), MovementRules.Result.OUT_OF_RANGE,
+        "6.1 from the new leader's turn start refused")
+    _check_eq(movement.order_move(squad, second_turn_start + Vector2(0.0, 6.0)), MovementRules.Result.OK,
+        "exactly 6 from the new leader's turn start allowed")
+    _check(squad.movement_complete, "full allowance now used")
+    f.activation.end_activation()
+    for i in 4:
+        if f.tm.turn_number == 1:
+            _complete_phase(f.activation, f.battle, f.tm)
+    _check_eq(f.tm.turn_number, 2, "turn 2")
+    _check_eq(squad.turn_start_position, squad.board_position, "next turn starts from the new leader")
+    _check_eq(squad.distance_moved, 0.0, "distance reset")
+    _free_battle_fixture(f)
+
+
+func test_destroyed_target_discards_unallocated_wounds() -> void:
+    var gun := _make_weapon(30.0, 4)
+    var shooter := _make_shooter(&"p1_s", P1, Vector2(10.0, 10.0), [["Gun", gun, Vector2.ZERO]])
+    # A second Player 1 squad ties the squad count, so Player 1 keeps priority.
+    var spare := _make_shooter(&"p1_spare", P1, Vector2(5.0, 30.0), [["S", null, Vector2.ZERO]])
+    var target := _make_shooter(&"p2_t", P2, Vector2(20.0, 10.0), [["A", null, Vector2.ZERO], ["B", null, Vector2(1.0, 0.0)]])
+    var other := _make_shooter(&"p2_o", P2, Vector2(40.0, 30.0), [["O", null, Vector2.ZERO]])
+    var f := _battle_fixture([shooter, spare, target, other])
+    var shooting: ShootingController = f.shooting
+    var activation: ActivationController = f.activation
+    var tm: TurnManager = f.tm
+    # Four hits and four wounds (S0 vs T0 needs 2+); no armor saves.
+    shooting.dice = ScriptedDice.new([6, 6, 6, 6, 6, 6, 6, 6])
+    var resolved := []
+    shooting.shot_resolved.connect(func(r): resolved.append(r))
+    _complete_phase(activation, f.battle, tm)
+    _check_eq(tm.current_phase, Phase.SHOOTING, "in Shooting")
+    _check_eq(activation.activate(shooter), ActivationController.Result.OK, "Player 1 activates the shooter")
+    _check_eq(shooting.order_shot(shooter, target), ShootingRules.OrderResult.OK, "shot accepted")
+    _check_eq(shooting.get_wounds_left(), 4, "4 unsaved wounds against 2 models")
+    shooting.allocate_wound(0)
+    _check(shooting.is_allocation_pending() and activation.locked, "still pending after the first casualty")
+    shooting.allocate_wound(1)
+    _check(not shooting.is_allocation_pending(), "allocation ends when the last model falls")
+    _check_eq(shooting.get_wounds_left(), 0, "no wounds left pending")
+    _check_eq(resolved.size(), 1, "result reported once")
+    _check_eq(resolved[0].wasted_wounds, 2, "remaining 2 wounds discarded")
+    _check(resolved[0].target_destroyed, "result reports the destruction")
+    _check_eq(f.battle.get_squad(&"p2_t"), null, "target removed through BattleState")
+    _check(not activation.locked, "lock released")
+    _check_eq(activation.active_squad, null, "shooter's activation ended")
+    _check(activation.has_activated(shooter), "shooter recorded as activated this phase")
+    _check_eq(tm.current_phase, Phase.SHOOTING, "phase continues: Player 2 still has a squad")
+    _check_eq(activation.get_active_player(), P2, "control passes to Player 2")
+    _check_eq(tm.get_remaining_activations(P2), 1, "only the destroyed squad's activation was removed")
+    _check_eq(shooting.allocate_wound(1), DamageRules.AllocationResult.NO_PENDING_WOUNDS, "no further allocation")
+    _check_eq(activation.activate(other), ActivationController.Result.OK, "Player 2 activates")
+    _check(shooting.order_shot(other, shooter) == ShootingRules.OrderResult.OK, "next shooter can shoot normally")
+    _free_battle_fixture(f)
+
+
 func test_unit_profile_resource() -> void:
     var profile := UnitProfile.new()
     # Temporary test fixture values, not game balance data.
@@ -1284,15 +1859,17 @@ func test_unit_profile_resource() -> void:
     profile.toughness = 3
     profile.wounds = 2
     profile.leadership = 7
+    profile.armor_save = 4
     _check(profile is Resource, "UnitProfile is a Resource")
     _check_eq(profile.movement, 6.5, "movement")
     _check_eq(profile.quality, 4, "quality")
     _check_eq(profile.toughness, 3, "toughness")
     _check_eq(profile.wounds, 2, "wounds")
     _check_eq(profile.leadership, 7, "leadership")
+    _check_eq(profile.armor_save, 4, "armor_save")
     _check_exported(profile, {
         "movement": TYPE_FLOAT, "quality": TYPE_INT, "toughness": TYPE_INT,
-        "wounds": TYPE_INT, "leadership": TYPE_INT,
+        "wounds": TYPE_INT, "leadership": TYPE_INT, "armor_save": TYPE_INT,
     })
 
 
@@ -1303,17 +1880,15 @@ func test_weapon_profile_resource() -> void:
     weapon.range = 15.5
     weapon.attacks = 2
     weapon.strength = 5
-    weapon.armor_value = 3
     weapon.armor_piercing = 1
     _check(weapon is Resource, "WeaponProfile is a Resource")
     _check_eq(weapon.weapon_name, "Test Gun", "name")
     _check_eq(weapon.range, 15.5, "range")
     _check_eq(weapon.attacks, 2, "attacks")
     _check_eq(weapon.strength, 5, "strength")
-    _check_eq(weapon.armor_value, 3, "armor_value")
     _check_eq(weapon.armor_piercing, 1, "armor_piercing")
     _check_exported(weapon, {"weapon_name": TYPE_STRING, "range": TYPE_FLOAT, "attacks": TYPE_INT,
-        "strength": TYPE_INT, "armor_value": TYPE_INT, "armor_piercing": TYPE_INT})
+        "strength": TYPE_INT, "armor_piercing": TYPE_INT})
 
 
 func _check_exported(object: Object, expected: Dictionary) -> void:

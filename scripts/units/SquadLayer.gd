@@ -72,16 +72,11 @@ func _add_token(state: SquadState) -> void:
     token.name = String(state.squad_id)
     token.state = state
     _tokens[state.squad_id] = token
-    var board := get_parent() as GameBoard
-    if board:
-        var offsets: Array[Vector2] = []
-        for i in state.get_model_count():
-            offsets.append(board.units_to_pixels(state.data.models[i].formation_offset))
-        token.model_offsets = offsets
     add_child(token)
     state.position_changed.connect(_sync_token_position)
+    state.models_changed.connect(_sync_token_models)
     _sync_token_position(state)
-    token.snap_to_target()
+    _sync_token_models(state)
 
 
 func _remove_token(state: SquadState) -> void:
@@ -89,6 +84,7 @@ func _remove_token(state: SquadState) -> void:
     if token == null:
         return
     state.position_changed.disconnect(_sync_token_position)
+    state.models_changed.disconnect(_sync_token_models)
     _tokens.erase(state.squad_id)
     remove_child(token)
     token.queue_free()
@@ -99,6 +95,20 @@ func _sync_token_position(state: SquadState) -> void:
     var board := get_parent() as GameBoard
     if token and board:
         token.target_position = board.units_to_pixels(state.board_position)
+
+
+## Redraws the token's living models around its anchor. A casualty can move the
+## anchor to a new leader, so the token jumps there rather than gliding.
+func _sync_token_models(state: SquadState) -> void:
+    var token: SquadToken = _tokens.get(state.squad_id)
+    var board := get_parent() as GameBoard
+    if token == null or board == null:
+        return
+    var offsets: Array[Vector2] = []
+    for model in state.get_living_models():
+        offsets.append(board.units_to_pixels(model.offset))
+    token.model_offsets = offsets
+    token.snap_to_target()
 
 
 func _unhandled_input(event: InputEvent) -> void:

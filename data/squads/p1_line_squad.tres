@@ -14,6 +14,7 @@ quality = 4
 toughness = 3
 wounds = 1
 leadership = 7
+armor_save = 4
 
 [sub_resource type="Resource" id="Resource_model_0"]
 script = ExtResource("3_model")
