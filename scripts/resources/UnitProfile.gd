@@ -17,3 +17,6 @@ class_name UnitProfile
 @export var wounds: int = 0
 ## Leadership rating used by morale tests.
 @export var leadership: int = 0
+## Armor save target number: a save succeeds on a D6 roll of this or more
+## (4 means 4+). 0 means the model has no armor save.
+@export var armor_save: int = 0

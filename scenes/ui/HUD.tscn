@@ -1,9 +1,10 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=6 format=3]
 
 [ext_resource type="Script" path="res://scripts/ui/HUD.gd" id="1_hud"]
 [ext_resource type="PackedScene" path="res://scenes/ui/PhaseBanner.tscn" id="2_banner"]
 [ext_resource type="PackedScene" path="res://scenes/ui/SquadInfoPanel.tscn" id="3_info"]
 [ext_resource type="PackedScene" path="res://scenes/ui/ActivationPanel.tscn" id="4_activation"]
+[ext_resource type="PackedScene" path="res://scenes/ui/AllocationPanel.tscn" id="5_allocation"]
 
 [node name="HUD" type="CanvasLayer"]
 script = ExtResource("1_hud")
@@ -17,10 +18,13 @@ anchors_preset = 1
 anchor_left = 1.0
 anchor_right = 1.0
 offset_left = -152.0
-offset_top = 200.0
+offset_top = 260.0
 offset_right = -4.0
-offset_bottom = 500.0
+offset_bottom = 716.0
 grow_horizontal = 0
+theme_override_font_sizes/font_size = 13
 autowrap_mode = 3
 
 [node name="ActivationPanel" parent="." instance=ExtResource("4_activation")]
+
+[node name="AllocationPanel" parent="." instance=ExtResource("5_allocation")]

@@ -13,7 +13,5 @@ class_name WeaponProfile
 @export var attacks: int = 0
 ## Strength rating used by D6 wound resolution.
 @export var strength: int = 0
-## Armor Value rating used by D6 armor-save resolution.
-@export var armor_value: int = 0
-## Armor Piercing (AP) rating applied against the target's armor save.
+## Armor Piercing (AP): added to the target's armor save target number.
 @export var armor_piercing: int = 0

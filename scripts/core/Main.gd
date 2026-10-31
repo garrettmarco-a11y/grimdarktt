@@ -28,7 +28,7 @@ func _ready() -> void:
     activation.bind(battle, turn_manager)
     movement.bind(battle, turn_manager, game_board.board_size)
     movement.activation = activation
-    shooting.bind(turn_manager, activation)
+    shooting.bind(turn_manager, activation, battle)
     hud.bind_turn_manager(turn_manager)
     hud.bind_selection(selection)
     hud.bind_movement(movement)

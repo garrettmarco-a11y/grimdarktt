@@ -1,7 +1,8 @@
 extends RefCounted
 class_name ShootingResult
 ## The outcome of one squad's shooting: which models fired, why the others
-## could not, and every hit roll. Hits and misses only; no wounds yet.
+## could not, every hit, wound and save roll, and where the defender allocated
+## the unsaved wounds.
 
 
 ## One model's part in the shooting.
@@ -13,14 +14,37 @@ class ModelResult:
     var distance := INF
     var rolls: Array[int] = []
     var hits := 0
+    ## Wound roll needed (2-6), set once the model has hits.
+    var wound_target := 0
+    var wound_rolls: Array[int] = []
+    var wounds := 0
+    ## Save target after AP, or 0 if the target has no save.
+    var save_target := 0
+    var save_rolls: Array[int] = []
+    var saves := 0
 
     func is_eligible() -> bool:
         return eligibility == ShootingRules.Eligibility.ELIGIBLE
+
+    func get_unsaved() -> int:
+        return wounds - saves
+
+
+## One unsaved wound placed by the defender.
+class Allocation:
+    var model_id: int
+    var model_name: String
+    var removed: bool
 
 
 var firing_squad: SquadState
 var target_squad: SquadState
 var model_results: Array[ModelResult] = []
+var allocations: Array[Allocation] = []
+## Unsaved wounds left unallocated because the target squad was destroyed.
+var wasted_wounds := 0
+var models_remaining := 0
+var target_destroyed := false
 
 
 func get_eligible_count() -> int:
@@ -47,3 +71,30 @@ func get_hits() -> int:
 
 func get_misses() -> int:
     return get_total_attacks() - get_hits()
+
+
+func get_wounds() -> int:
+    var total := 0
+    for r in model_results:
+        total += r.wounds
+    return total
+
+
+func get_saves() -> int:
+    var total := 0
+    for r in model_results:
+        total += r.saves
+    return total
+
+
+func get_unsaved_wounds() -> int:
+    return get_wounds() - get_saves()
+
+
+## Names of the models removed by this shooting, in the order they fell.
+func get_casualties() -> PackedStringArray:
+    var names := PackedStringArray()
+    for a in allocations:
+        if a.removed:
+            names.append(a.model_name)
+    return names

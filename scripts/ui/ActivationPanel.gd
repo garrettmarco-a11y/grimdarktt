@@ -38,7 +38,10 @@ func refresh() -> void:
 
     if active:
         action_button.text = "End activation"
-        action_button.disabled = false
+        action_button.disabled = _activation.locked
+        if _activation.locked:
+            hint_label.text = "Waiting for wound allocation"
+            return
         match _activation.get_phase():
             TurnManager.Phase.MOVEMENT:
                 hint_label.text = "Right-click to move"
