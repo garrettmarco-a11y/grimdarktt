@@ -75,3 +75,14 @@ func get_remaining_movement() -> float:
 
 func get_player() -> int:
     return _data.player if _data else 0
+
+
+## Number of models in the squad's composition.
+func get_model_count() -> int:
+    return _data.models.size() if _data else 0
+
+
+## Board position of model `index`. Temporary representation: models keep
+## their formation offset from the squad anchor and move rigidly with it.
+func get_model_position(index: int) -> Vector2:
+    return board_position + _data.models[index].formation_offset

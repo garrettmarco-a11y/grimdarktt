@@ -19,7 +19,7 @@ anchor_right = 1.0
 offset_left = -152.0
 offset_top = 200.0
 offset_right = -4.0
-offset_bottom = 260.0
+offset_bottom = 500.0
 grow_horizontal = 0
 autowrap_mode = 3
 

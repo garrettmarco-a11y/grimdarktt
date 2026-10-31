@@ -3,15 +3,17 @@ class_name SquadLayer
 ## Draws the battlefield's squads: keeps one SquadToken per SquadState in a
 ## BattleState, points each token at its state's position, and turns mouse
 ## clicks into squad_clicked / empty_space_clicked (left button) and
-## destination_clicked (right button).
+## squad_right_clicked / destination_clicked (right button).
 ##
 ## Must be a direct child of a GameBoard. Knows nothing about turns or phases
 ## and owns no battlefield or selection state.
 
 signal squad_clicked(state: SquadState)
 signal empty_space_clicked
-## A right-click at `board_point` (board units), offered as a move destination.
+## A right-click on empty space at `board_point` (board units).
 signal destination_clicked(board_point: Vector2)
+## A right-click on a squad's token at `board_point` (board units).
+signal squad_right_clicked(state: SquadState, board_point: Vector2)
 
 @export var token_scene: PackedScene = preload("res://scenes/units/SquadToken.tscn")
 
@@ -70,6 +72,12 @@ func _add_token(state: SquadState) -> void:
     token.name = String(state.squad_id)
     token.state = state
     _tokens[state.squad_id] = token
+    var board := get_parent() as GameBoard
+    if board:
+        var offsets: Array[Vector2] = []
+        for i in state.get_model_count():
+            offsets.append(board.units_to_pixels(state.data.models[i].formation_offset))
+        token.model_offsets = offsets
     add_child(token)
     state.position_changed.connect(_sync_token_position)
     _sync_token_position(state)
@@ -101,7 +109,12 @@ func _unhandled_input(event: InputEvent) -> void:
     if click.button_index == MOUSE_BUTTON_RIGHT:
         var board := get_parent() as GameBoard
         if board:
-            destination_clicked.emit(board.pixels_to_units(local_point))
+            var board_point := board.pixels_to_units(local_point)
+            var target := token_at(local_point)
+            if target:
+                squad_right_clicked.emit(target.state, board_point)
+            else:
+                destination_clicked.emit(board_point)
             get_viewport().set_input_as_handled()
         return
     if click.button_index != MOUSE_BUTTON_LEFT:
