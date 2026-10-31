@@ -9,6 +9,8 @@ signal move_rejected(state: SquadState, destination: Vector2, result: MovementRu
 
 ## Battlefield size in board units, used to reject off-board destinations.
 var board_size := Vector2.ZERO
+## When set, only the currently activated squad may be ordered to move.
+var activation: ActivationController
 
 var _battle: BattleState
 var _turn_manager: TurnManager
@@ -27,7 +29,8 @@ func bind(battle: BattleState, turn_manager: TurnManager, board_units: Vector2) 
 ## Orders `state` to move to `destination` (board units). Returns the result;
 ## only an OK order changes the squad's state.
 func order_move(state: SquadState, destination: Vector2) -> MovementRules.Result:
-    var result := MovementRules.validate(state, destination, _turn_manager.current_phase, board_size)
+    var activated := activation == null or activation.is_active_squad(state)
+    var result := MovementRules.validate(state, destination, _turn_manager.current_phase, board_size, activated)
     if result != MovementRules.Result.OK:
         move_rejected.emit(state, destination, result)
         return result

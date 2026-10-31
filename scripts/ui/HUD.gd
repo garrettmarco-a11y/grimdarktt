@@ -1,11 +1,12 @@
 extends CanvasLayer
 class_name HUD
-## Displays game state. Reads from the turn manager, selection and movement
-## controller through signals only.
+## Displays game state. Reads from the turn manager, selection, activation and
+## movement controllers through signals only.
 
 @onready var phase_banner: PhaseBanner = $PhaseBanner
 @onready var squad_info_panel: SquadInfoPanel = $SquadInfoPanel
 @onready var order_feedback: Label = $OrderFeedback
+@onready var activation_panel: ActivationPanel = $ActivationPanel
 
 
 func bind_turn_manager(turn_manager: TurnManager) -> void:
@@ -14,6 +15,10 @@ func bind_turn_manager(turn_manager: TurnManager) -> void:
 
 func bind_selection(selection: SelectionManager) -> void:
     selection.selection_changed.connect(squad_info_panel.show_squad)
+
+
+func bind_activation(activation: ActivationController, selection: SelectionManager) -> void:
+    activation_panel.bind(activation, selection)
 
 
 func bind_movement(movement: MovementController) -> void:
@@ -33,6 +38,8 @@ func _on_move_rejected(state: SquadState, destination: Vector2, result: Movement
             order_feedback.text = "Select a squad to move"
         MovementRules.Result.WRONG_PHASE:
             order_feedback.text = "Move orders only in the Movement phase"
+        MovementRules.Result.NOT_ACTIVATED:
+            order_feedback.text = "Activate %s before moving it" % state.data.display_name
         MovementRules.Result.MOVEMENT_COMPLETE:
             order_feedback.text = "%s has finished moving" % state.data.display_name
         MovementRules.Result.OFF_BOARD:

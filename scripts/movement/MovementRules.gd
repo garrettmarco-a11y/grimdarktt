@@ -4,7 +4,8 @@ class_name MovementRules
 ## No scene, animation or input dependencies, so it is testable on its own.
 ##
 ## Rules (agreed with the project lead):
-##   - Orders are only accepted in the Movement phase.
+##   - Orders are only accepted in the Movement phase, and only for the squad
+##     that is currently activated.
 ##   - A squad's allowance for the turn is its leader's M characteristic. Until
 ##     squads have model rosters, the squad's single profile stands in for the
 ##     leader's.
@@ -14,7 +15,7 @@ class_name MovementRules
 ##     allowance of the turn-start position.
 ##   - Once a squad has moved its full allowance its movement is complete.
 
-enum Result { OK, NO_SQUAD, WRONG_PHASE, MOVEMENT_COMPLETE, OFF_BOARD, OUT_OF_RANGE }
+enum Result { OK, NO_SQUAD, WRONG_PHASE, NOT_ACTIVATED, MOVEMENT_COMPLETE, OFF_BOARD, OUT_OF_RANGE }
 
 ## Tolerance for float comparisons, in board units.
 const EPSILON := 0.001
@@ -31,13 +32,16 @@ static func distance(from: Vector2, to: Vector2) -> float:
 
 
 ## Checks a move order for `state` to `destination` (board units) during
-## `phase`, on a board of `board_size` units. Changes nothing.
+## `phase`, on a board of `board_size` units. `squad_is_activated` says whether
+## `state` is the currently activated squad. Changes nothing.
 static func validate(state: SquadState, destination: Vector2, phase: TurnManager.Phase,
-        board_size: Vector2) -> Result:
+        board_size: Vector2, squad_is_activated := true) -> Result:
     if state == null:
         return Result.NO_SQUAD
     if phase != TurnManager.Phase.MOVEMENT:
         return Result.WRONG_PHASE
+    if not squad_is_activated:
+        return Result.NOT_ACTIVATED
     if state.movement_complete:
         return Result.MOVEMENT_COMPLETE
     if destination.x < 0.0 or destination.y < 0.0 \

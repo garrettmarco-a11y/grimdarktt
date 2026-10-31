@@ -54,6 +54,17 @@ func show_selection(selected: SquadState) -> void:
         token.selected = selected != null and token.state == selected
 
 
+## Marks `active` as activated and the squads in `spent` as already activated.
+func show_activation(active: SquadState, spent: Array[SquadState]) -> void:
+    for token in get_tokens():
+        if token.state == active:
+            token.activation_display = SquadToken.ActivationDisplay.ACTIVE
+        elif token.state in spent:
+            token.activation_display = SquadToken.ActivationDisplay.SPENT
+        else:
+            token.activation_display = SquadToken.ActivationDisplay.READY
+
+
 func _add_token(state: SquadState) -> void:
     var token := token_scene.instantiate() as SquadToken
     token.name = String(state.squad_id)
