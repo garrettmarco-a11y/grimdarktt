@@ -1,4 +1,4 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=16 format=3]
 
 [ext_resource type="Script" path="res://scripts/core/Main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://scenes/core/GameBoard.tscn" id="2_board"]
@@ -12,6 +12,7 @@
 [ext_resource type="Script" path="res://scripts/movement/MovementOverlay.gd" id="10_overlay"]
 [ext_resource type="Script" path="res://scripts/movement/MovementController.gd" id="11_movement"]
 [ext_resource type="Script" path="res://scripts/core/ActivationController.gd" id="12_activation"]
+[ext_resource type="Script" path="res://scripts/shooting/ShootingController.gd" id="13_shooting"]
 
 [sub_resource type="Resource" id="Resource_p1_setup"]
 script = ExtResource("6_setup")
@@ -48,3 +49,6 @@ script = ExtResource("11_movement")
 
 [node name="ActivationController" type="Node" parent="."]
 script = ExtResource("12_activation")
+
+[node name="ShootingController" type="Node" parent="."]
+script = ExtResource("13_shooting")

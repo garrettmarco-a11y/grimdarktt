@@ -43,6 +43,10 @@ func get_active_player() -> int:
     return _turn_manager.active_player if _turn_manager else TurnManager.NO_PLAYER
 
 
+func get_phase() -> TurnManager.Phase:
+    return _turn_manager.current_phase
+
+
 func is_active_squad(state: SquadState) -> bool:
     return state != null and state == active_squad
 

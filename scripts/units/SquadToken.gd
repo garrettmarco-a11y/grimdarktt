@@ -16,6 +16,8 @@ const PLAYER_COLORS := {
 const NEUTRAL_COLOR := Color(0.6, 0.6, 0.6)
 const SELECTION_COLOR := Color(1.0, 0.86, 0.35)
 const ACTIVE_COLOR := Color(1.0, 1.0, 1.0)
+## Radius of a model dot, in pixels; also its click radius.
+const MODEL_RADIUS := 5.0
 
 ## Activation display states, pushed in by SquadLayer.
 enum ActivationDisplay { READY, ACTIVE, SPENT }
@@ -41,6 +43,11 @@ var selected := false:
 var activation_display := ActivationDisplay.READY:
     set(value):
         activation_display = value
+        queue_redraw()
+## Pixel offsets of the squad's models from the marker, set by SquadLayer.
+var model_offsets: Array[Vector2] = []:
+    set(value):
+        model_offsets = value
         queue_redraw()
 ## Pixel position of the squad's authoritative board position.
 var target_position := Vector2.ZERO:
@@ -82,9 +89,15 @@ func get_player() -> int:
     return state.get_player() if state else 0
 
 
-## True if `local_point` (in this token's local pixels) is on the marker.
+## True if `local_point` (in this token's local pixels) is on the marker or
+## one of its model dots.
 func contains_local_point(local_point: Vector2) -> bool:
-    return local_point.length() <= radius
+    if local_point.length() <= radius:
+        return true
+    for offset in model_offsets:
+        if local_point.distance_to(offset) <= MODEL_RADIUS + 2.0:
+            return true
+    return false
 
 
 func _draw() -> void:
@@ -95,5 +108,8 @@ func _draw() -> void:
         draw_circle(Vector2.ZERO, radius + 11.0, ACTIVE_COLOR, false, 2.0)
     if selected:
         draw_circle(Vector2.ZERO, radius + 6.0, SELECTION_COLOR, false, 3.0)
+    for offset in model_offsets:
+        draw_circle(offset, MODEL_RADIUS, color.darkened(0.45))
+        draw_circle(offset, MODEL_RADIUS - 1.5, color)
     draw_circle(Vector2.ZERO, radius, color.darkened(0.45))
     draw_circle(Vector2.ZERO, radius - 4.0, color)

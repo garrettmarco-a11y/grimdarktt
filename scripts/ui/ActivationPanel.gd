@@ -39,7 +39,13 @@ func refresh() -> void:
     if active:
         action_button.text = "End activation"
         action_button.disabled = false
-        hint_label.text = ""
+        match _activation.get_phase():
+            TurnManager.Phase.MOVEMENT:
+                hint_label.text = "Right-click to move"
+            TurnManager.Phase.SHOOTING:
+                hint_label.text = "Right-click an enemy squad to shoot"
+            _:
+                hint_label.text = ""
         return
     action_button.text = "Activate"
     var selected := _selection.selected_squad

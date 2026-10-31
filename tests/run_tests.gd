@@ -15,6 +15,17 @@ const Phase := TurnManager.Phase
 var _failures: Array[String] = []
 
 
+## Dice that return a fixed sequence of rolls, for deterministic tests.
+class ScriptedDice extends DiceRoller:
+    var rolls: Array[int] = []
+
+    func _init(values: Array[int]) -> void:
+        rolls = values.duplicate()
+
+    func roll_d6() -> int:
+        return rolls.pop_front()
+
+
 func _initialize() -> void:
     _run_all.call_deferred()
 
@@ -984,6 +995,287 @@ func test_activation_panel_and_tokens_in_main_scene() -> void:
     await process_frame
 
 
+## A weapon for tests. Temporary fixture values, not game balance data.
+func _make_weapon(weapon_range: float, attacks: int) -> WeaponProfile:
+    var weapon := WeaponProfile.new()
+    weapon.weapon_name = "Gun %s" % weapon_range
+    weapon.range = weapon_range
+    weapon.attacks = attacks
+    return weapon
+
+
+## A squad whose models are given as [name, weapon or null, offset] entries.
+func _make_shooter(squad_id: StringName, player: int, position: Vector2, models: Array,
+        quality := 4) -> SquadState:
+    var state := _make_state(squad_id, player, position)
+    state.data.profile.quality = quality
+    state.data.profile.movement = 6.0
+    for entry in models:
+        var model := SquadModel.new()
+        model.model_name = entry[0]
+        model.weapon = entry[1]
+        model.formation_offset = entry[2]
+        state.data.models.append(model)
+    return state
+
+
+func test_placeholder_weapons_differ() -> void:
+    var rifle: WeaponProfile = load("res://data/weapons/rifle.tres")
+    var pistol: WeaponProfile = load("res://data/weapons/pistol.tres")
+    var heavy: WeaponProfile = load("res://data/weapons/heavy_gun.tres")
+    _check_eq([rifle.weapon_name, pistol.weapon_name, heavy.weapon_name], ["Rifle", "Pistol", "Heavy Gun"], "names")
+    _check(rifle.range != pistol.range and heavy.range != rifle.range, "different ranges")
+    _check(heavy.attacks != rifle.attacks, "different attack counts")
+    var line: SquadData = load("res://data/squads/p1_line_squad.tres")
+    _check_eq(line.models.size(), 4, "Line Squad lists its models")
+    _check_eq(line.models[3].weapon, heavy, "models reference shared weapon profiles")
+
+
+func test_model_eligibility_reasons() -> void:
+    var los := LineOfSight.new()
+    var targets: Array[Vector2] = [Vector2(20.0, 10.0)]
+    var gun := _make_weapon(12.0, 1)
+    var r := ShootingRules.evaluate_model("A", gun, Vector2(10.0, 10.0), targets, los)
+    _check_eq(r.eligibility, ShootingRules.Eligibility.ELIGIBLE, "weapon, range and line of sight: can fire")
+    _check_eq(r.distance, 10.0, "distance to target")
+    r = ShootingRules.evaluate_model("B", gun, Vector2(5.0, 10.0), targets, los)
+    _check_eq(r.eligibility, ShootingRules.Eligibility.OUT_OF_RANGE, "15 > 12: out of range")
+    r = ShootingRules.evaluate_model("C", null, Vector2(10.0, 10.0), targets, los)
+    _check_eq(r.eligibility, ShootingRules.Eligibility.NO_RANGED_WEAPON, "no weapon")
+    r = ShootingRules.evaluate_model("D", _make_weapon(0.0, 1), Vector2(10.0, 10.0), targets, los)
+    _check_eq(r.eligibility, ShootingRules.Eligibility.NO_RANGED_WEAPON, "range 0 is not a ranged weapon")
+    los.add_blocker(Rect2(14.0, 8.0, 2.0, 4.0))
+    r = ShootingRules.evaluate_model("E", gun, Vector2(10.0, 10.0), targets, los)
+    _check_eq(r.eligibility, ShootingRules.Eligibility.NO_LINE_OF_SIGHT, "blocked: no line of sight")
+
+
+func test_range_boundaries() -> void:
+    var gun := _make_weapon(12.0, 1)
+    _check(ShootingRules.in_range(gun, 11.5), "within range")
+    _check(ShootingRules.in_range(gun, 12.0), "exactly at maximum range")
+    _check(not ShootingRules.in_range(gun, 12.01), "beyond maximum range")
+    var los := LineOfSight.new()
+    var exact: Array[Vector2] = [Vector2(13.0, 1.0)]
+    _check_eq(ShootingRules.evaluate_model("A", gun, Vector2(1.0, 1.0), exact, los).eligibility,
+        ShootingRules.Eligibility.ELIGIBLE, "model exactly 12 away can fire")
+
+
+func test_line_of_sight_query() -> void:
+    var los := LineOfSight.new()
+    _check(los.has_line_of_sight(Vector2(0.0, 0.0), Vector2(40.0, 30.0)), "clear with no blockers")
+    los.add_blocker(Rect2(10.0, 4.0, 2.0, 2.0))
+    _check(not los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(20.0, 5.0)), "blocker on the line blocks")
+    _check(los.has_line_of_sight(Vector2(0.0, 0.0), Vector2(20.0, 0.0)), "blocker off the line does not block")
+    _check(not los.has_line_of_sight(Vector2(11.0, 5.0), Vector2(20.0, 5.0)), "line starting inside a blocker is blocked")
+    los.clear_blockers()
+    _check(los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(20.0, 5.0)), "clear again once removed")
+
+
+func test_line_of_sight_to_any_target_model() -> void:
+    var los := LineOfSight.new()
+    los.add_blocker(Rect2(14.0, 9.0, 2.0, 2.0))
+    var targets: Array[Vector2] = [Vector2(20.0, 10.0), Vector2(20.0, 14.0)]
+    var r := ShootingRules.evaluate_model("A", _make_weapon(12.0, 1), Vector2(10.0, 10.0), targets, los)
+    _check_eq(r.eligibility, ShootingRules.Eligibility.ELIGIBLE, "a visible target model in range is enough")
+
+
+func test_hit_rolls_against_quality() -> void:
+    _check(ShootingRules.is_hit(4, 4), "roll equal to Quality hits")
+    _check(ShootingRules.is_hit(6, 4), "roll above Quality hits")
+    _check(not ShootingRules.is_hit(3, 4), "roll below Quality misses")
+    var dice := ScriptedDice.new([4, 3, 6])
+    _check_eq(ShootingRules.roll_attacks(3, dice), [4, 3, 6], "one independent roll per attack")
+    var seeded_a := DiceRoller.new(42)
+    var seeded_b := DiceRoller.new(42)
+    var a := []
+    var b := []
+    for i in 20:
+        a.append(seeded_a.roll_d6())
+        b.append(seeded_b.roll_d6())
+    _check_eq(a, b, "seeded dice repeat")
+    _check(a.all(func(v): return v >= 1 and v <= 6), "rolls are D6 values")
+
+
+func test_resolve_per_model_and_totals() -> void:
+    # Temporary fixture values, not game balance data.
+    var firing := _make_shooter(&"shooters", P1, Vector2(10.0, 10.0), [
+        ["Leader", _make_weapon(6.0, 1), Vector2.ZERO],
+        ["Rifle", _make_weapon(24.0, 1), Vector2(0.0, 1.0)],
+        ["Heavy", _make_weapon(24.0, 3), Vector2(0.0, -1.0)],
+        ["Unarmed", null, Vector2(1.0, 0.0)],
+    ], 4)
+    var target := _make_shooter(&"target", P2, Vector2(30.0, 10.0), [["T", null, Vector2.ZERO]])
+    var result := ShootingRules.resolve(firing, target, LineOfSight.new(), ScriptedDice.new([5, 2, 4, 6]))
+    _check_eq(result.firing_squad, firing, "firing squad")
+    _check_eq(result.target_squad, target, "target squad")
+    _check_eq(result.get_eligible_count(), 2, "rifle and heavy fire")
+    _check_eq(result.get_ineligible_count(), 2, "leader out of range, unarmed model")
+    _check_eq(result.model_results[0].eligibility, ShootingRules.Eligibility.OUT_OF_RANGE, "leader reason")
+    _check_eq(result.model_results[3].eligibility, ShootingRules.Eligibility.NO_RANGED_WEAPON, "unarmed reason")
+    _check_eq(result.model_results[1].rolls, [5], "rifle rolled once")
+    _check_eq(result.model_results[2].rolls, [2, 4, 6], "heavy rolled three times")
+    _check_eq(result.get_total_attacks(), 4, "total attacks")
+    _check_eq(result.get_hits(), 3, "5, 4 and 6 hit on Quality 4")
+    _check_eq(result.get_misses(), 1, "the 2 misses")
+
+
+func test_zero_eligible_models_is_a_valid_result() -> void:
+    var firing := _make_shooter(&"shooters", P1, Vector2(1.0, 1.0), [
+        ["Pistol", _make_weapon(6.0, 1), Vector2.ZERO], ["Unarmed", null, Vector2(1.0, 0.0)]])
+    var target := _make_shooter(&"target", P2, Vector2(40.0, 30.0), [["T", null, Vector2.ZERO]])
+    var result := ShootingRules.resolve(firing, target, LineOfSight.new(), ScriptedDice.new([]))
+    _check_eq(result.model_results.size(), 2, "both models reported")
+    _check_eq([result.get_eligible_count(), result.get_total_attacks(), result.get_hits(), result.get_misses()],
+        [0, 0, 0, 0], "zero shots")
+
+
+## A started game with shooters for both players and all controllers bound.
+func _shooting_fixture(extra_p1 := false) -> Dictionary:
+    var battle := BattleState.new()
+    var rifle := _make_weapon(24.0, 1)
+    battle.add_squad(_make_shooter(&"p1_a", P1, Vector2(10.0, 10.0), [["Rifle", rifle, Vector2.ZERO]]))
+    if extra_p1:
+        battle.add_squad(_make_shooter(&"p1_b", P1, Vector2(10.0, 20.0), [["Rifle", rifle, Vector2.ZERO]]))
+    battle.add_squad(_make_shooter(&"p2_a", P2, Vector2(30.0, 10.0), [["Rifle", rifle, Vector2.ZERO]]))
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var shooting := ShootingController.new()
+    shooting.bind(tm, activation)
+    shooting.dice = ScriptedDice.new([6, 6, 6, 6, 6, 6])
+    tm.start_game()
+    return {"battle": battle, "tm": tm, "activation": activation, "shooting": shooting}
+
+
+func _free_shooting_fixture(f: Dictionary) -> void:
+    f.tm.free()
+    f.activation.free()
+    f.shooting.free()
+
+
+func test_shooting_only_in_shooting_phase() -> void:
+    var f := _shooting_fixture()
+    var p1: SquadState = f.battle.get_squad(&"p1_a")
+    var p2: SquadState = f.battle.get_squad(&"p2_a")
+    f.activation.activate(p1)
+    _check_eq(f.shooting.order_shot(p1, p2), ShootingRules.OrderResult.WRONG_PHASE, "refused in Movement")
+    _check(f.activation.is_active_squad(p1), "refused order does not spend the activation")
+    f.activation.end_activation()
+    _complete_phase(f.activation, f.battle, f.tm)
+    _check_eq(f.tm.current_phase, Phase.SHOOTING, "now Shooting")
+    _complete_phase(f.activation, f.battle, f.tm)
+    _check_eq(f.tm.current_phase, Phase.ASSAULT, "now Assault")
+    f.activation.activate(f.battle.get_squad(&"p1_a"))
+    _check_eq(f.shooting.order_shot(p1, p2), ShootingRules.OrderResult.WRONG_PHASE, "refused in Assault")
+    _check_eq(ShootingRules.validate_order(p1, p2, Phase.MORALE, true), ShootingRules.OrderResult.WRONG_PHASE,
+        "refused in Morale")
+    _free_shooting_fixture(f)
+
+
+## Advances `f` to the Shooting phase of turn 1.
+func _to_shooting(f: Dictionary) -> void:
+    _complete_phase(f.activation, f.battle, f.tm)
+
+
+func test_cannot_target_own_squad() -> void:
+    var f := _shooting_fixture(true)
+    _to_shooting(f)
+    var p1: SquadState = f.battle.get_squad(&"p1_a")
+    f.activation.activate(p1)
+    _check_eq(f.shooting.order_shot(p1, f.battle.get_squad(&"p1_b")), ShootingRules.OrderResult.OWN_SQUAD,
+        "own squad refused")
+    _check(f.activation.is_active_squad(p1), "activation not spent")
+    _free_shooting_fixture(f)
+
+
+func test_cannot_shoot_with_opponents_squad() -> void:
+    var f := _shooting_fixture()
+    _to_shooting(f)
+    var p1: SquadState = f.battle.get_squad(&"p1_a")
+    var p2: SquadState = f.battle.get_squad(&"p2_a")
+    _check_eq(f.activation.get_active_player(), P1, "Player 1 to activate")
+    _check_eq(f.activation.activate(p2), ActivationController.Result.WRONG_PLAYER, "cannot activate opponent's squad")
+    _check_eq(f.shooting.order_shot(p2, p1), ShootingRules.OrderResult.NOT_ACTIVATED, "cannot shoot with it")
+    _free_shooting_fixture(f)
+
+
+func test_shooting_spends_activation_and_passes_control() -> void:
+    var f := _shooting_fixture()
+    _to_shooting(f)
+    var p1: SquadState = f.battle.get_squad(&"p1_a")
+    var p2: SquadState = f.battle.get_squad(&"p2_a")
+    var results := []
+    f.shooting.shot_resolved.connect(func(r): results.append(r))
+    f.activation.activate(p1)
+    _check_eq(f.shooting.order_shot(p1, p2), ShootingRules.OrderResult.OK, "shot accepted")
+    _check_eq(results.size(), 1, "result reported")
+    _check_eq(results[0].get_hits(), 1, "rifle hit on a 6")
+    _check(f.activation.has_activated(p1), "activation spent")
+    _check_eq(f.activation.active_squad, null, "no squad active")
+    _check_eq(f.activation.get_active_player(), P2, "control passes to Player 2")
+    _check_eq(f.shooting.order_shot(p1, p2), ShootingRules.OrderResult.NOT_ACTIVATED, "cannot shoot again")
+    _check_eq(f.activation.activate(p1), ActivationController.Result.ALREADY_ACTIVATED, "cannot reactivate")
+    f.activation.activate(p2)
+    _check_eq(f.shooting.order_shot(p2, p1), ShootingRules.OrderResult.OK, "Player 2 shoots back")
+    _check_eq(f.tm.current_phase, Phase.ASSAULT, "phase advances once both have shot")
+    _free_shooting_fixture(f)
+
+
+func test_zero_eligible_shot_still_spends_activation() -> void:
+    var f := _shooting_fixture()
+    _to_shooting(f)
+    var p1: SquadState = f.battle.get_squad(&"p1_a")
+    var p2: SquadState = f.battle.get_squad(&"p2_a")
+    p2.board_position = Vector2(45.0, 30.0)
+    var results := []
+    f.shooting.shot_resolved.connect(func(r): results.append(r))
+    f.activation.activate(p1)
+    _check_eq(f.shooting.order_shot(p1, p2), ShootingRules.OrderResult.OK, "order accepted")
+    _check_eq(results[0].get_eligible_count(), 0, "no model in range")
+    _check_eq(results[0].get_total_attacks(), 0, "no attacks")
+    _check(f.activation.has_activated(p1), "activation spent anyway")
+    _check_eq(f.activation.get_active_player(), P2, "control passes")
+    _free_shooting_fixture(f)
+
+
+func test_shooting_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var layer: SquadLayer = main.get_node("GameBoard/Squads")
+    var activation: ActivationController = main.get_node("ActivationController")
+    var shooting: ShootingController = main.get_node("ShootingController")
+    var panel: ActivationPanel = main.get_node("HUD/ActivationPanel")
+    var feedback: Label = main.get_node("HUD/OrderFeedback")
+    var tm: TurnManager = main.get_node("TurnManager")
+    shooting.dice = ScriptedDice.new([1, 4, 6, 3, 5])
+    _complete_phase(activation, main.battle, tm)
+    _check_eq(tm.current_phase, Phase.SHOOTING, "Shooting phase")
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider_token := layer.get_token(&"p2_raider_squad")
+    _check_eq(layer.get_token(&"p1_line_squad").model_offsets.size(), 4, "token draws Line Squad's 4 models")
+
+    _right_click(raider_token.global_position)
+    _check_eq(feedback.text, "Activate a squad to shoot", "targeting needs an activated squad")
+    _click(layer.get_token(&"p1_line_squad").global_position)
+    panel.action_button.pressed.emit()
+    _check(activation.is_active_squad(line), "Line Squad activated")
+    _check_eq(panel.hint_label.text, "Right-click an enemy squad to shoot", "targeting prompt shown")
+    _right_click(layer.get_token(&"p1_line_squad").global_position)
+    _check_eq(feedback.text, "Cannot shoot your own squad", "own squad refused")
+    _right_click(raider_token.global_position)
+    _check(feedback.text.begins_with("Line Squad shot Raider Squad"), "result shown")
+    # The Sergeant's pistol (12) is out of range, and so is one Trooper: same
+    # rifle as the other Trooper, but standing 24.2 from the nearest Raider.
+    _check(feedback.text.contains("Fired: 2  Unable: 2"), "per-model eligibility counted")
+    _check(feedback.text.contains("Attacks 4: 2 hit, 2 miss"), "rolls 1 (rifle), 4, 6, 3 (heavy gun) on Quality 4")
+    _check(feedback.text.contains("Sergeant: out of range"), "Sergeant's reason shown")
+    _check(feedback.text.contains("Trooper: out of range"), "out-of-range Trooper's reason shown")
+    _check(feedback.text.contains("Gunner: 2/3 hit"), "Gunner's hits shown")
+    _check(activation.has_activated(line), "activation spent")
+    _check_eq(panel.player_label.text, "Player 2 to activate", "control passed")
+    main.queue_free()
+    await process_frame
+
+
 func test_unit_profile_resource() -> void:
     var profile := UnitProfile.new()
     # Temporary test fixture values, not game balance data.
@@ -1007,14 +1299,21 @@ func test_unit_profile_resource() -> void:
 func test_weapon_profile_resource() -> void:
     var weapon := WeaponProfile.new()
     # Temporary test fixture values, not game balance data.
+    weapon.weapon_name = "Test Gun"
+    weapon.range = 15.5
+    weapon.attacks = 2
     weapon.strength = 5
     weapon.armor_value = 3
     weapon.armor_piercing = 1
     _check(weapon is Resource, "WeaponProfile is a Resource")
+    _check_eq(weapon.weapon_name, "Test Gun", "name")
+    _check_eq(weapon.range, 15.5, "range")
+    _check_eq(weapon.attacks, 2, "attacks")
     _check_eq(weapon.strength, 5, "strength")
     _check_eq(weapon.armor_value, 3, "armor_value")
     _check_eq(weapon.armor_piercing, 1, "armor_piercing")
-    _check_exported(weapon, {"strength": TYPE_INT, "armor_value": TYPE_INT, "armor_piercing": TYPE_INT})
+    _check_exported(weapon, {"weapon_name": TYPE_STRING, "range": TYPE_FLOAT, "attacks": TYPE_INT,
+        "strength": TYPE_INT, "armor_value": TYPE_INT, "armor_piercing": TYPE_INT})
 
 
 func _check_exported(object: Object, expected: Dictionary) -> void:

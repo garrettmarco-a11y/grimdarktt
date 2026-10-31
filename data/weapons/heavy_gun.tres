@@ -1,0 +1,11 @@
+[gd_resource type="Resource" script_class="WeaponProfile" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/resources/WeaponProfile.gd" id="1_weapon"]
+
+[resource]
+script = ExtResource("1_weapon")
+weapon_name = "Heavy Gun"
+range = 30.0
+attacks = 3
+strength = 5
+armor_piercing = 1
