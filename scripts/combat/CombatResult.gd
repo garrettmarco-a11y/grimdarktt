@@ -1,11 +1,15 @@
 extends RefCounted
-class_name ShootingResult
-## The outcome of one squad's shooting: which models fired, why the others
-## could not, every hit, wound and save roll, and where the defender allocated
-## the unsaved wounds.
+class_name CombatResult
+## The outcome of one squad's attack, ranged (shooting) or melee (assault):
+## which models attacked, why the others could not, every hit, wound and save
+## roll, and where the defender allocated the unsaved wounds.
+
+enum AttackType { RANGED, MELEE }
+## Why a model could or could not attack.
+enum Eligibility { ELIGIBLE, NO_RANGED_WEAPON, OUT_OF_RANGE, NO_LINE_OF_SIGHT, NO_MELEE_WEAPON, NOT_ENGAGED }
 
 
-## One model's part in the shooting.
+## One model's part in the attack.
 class ModelResult:
     var model_name: String
     var weapon: WeaponProfile
@@ -24,7 +28,7 @@ class ModelResult:
     var saves := 0
 
     func is_eligible() -> bool:
-        return eligibility == ShootingRules.Eligibility.ELIGIBLE
+        return eligibility == CombatResult.Eligibility.ELIGIBLE
 
     func get_unsaved() -> int:
         return wounds - saves
@@ -37,7 +41,8 @@ class Allocation:
     var removed: bool
 
 
-var firing_squad: SquadState
+var attack_type := AttackType.RANGED
+var attacker_squad: SquadState
 var target_squad: SquadState
 var model_results: Array[ModelResult] = []
 var allocations: Array[Allocation] = []

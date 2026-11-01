@@ -40,3 +40,7 @@ func get_model_name() -> String:
 
 func get_weapon() -> WeaponProfile:
     return _definition.weapon if _definition else null
+
+
+func get_melee_weapon() -> WeaponProfile:
+    return _definition.melee_weapon if _definition else null

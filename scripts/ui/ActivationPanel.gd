@@ -47,6 +47,8 @@ func refresh() -> void:
                 hint_label.text = "Right-click to move"
             TurnManager.Phase.SHOOTING:
                 hint_label.text = "Right-click an enemy squad to shoot"
+            TurnManager.Phase.ASSAULT:
+                hint_label.text = "Right-click an enemy squad to assault"
             _:
                 hint_label.text = ""
         return

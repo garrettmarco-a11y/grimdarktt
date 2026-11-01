@@ -49,10 +49,10 @@ static func is_saved(roll: int, target: int) -> bool:
     return can_be_saved(target) and roll != 1 and roll >= target
 
 
-## For each firing model: rolls a wound for every hit, then a save for every
+## For each attacking model: rolls a wound for every hit, then a save for every
 ## wound, using the target squad's Toughness and armor save. Fills the
 ## per-model wound and save fields; allocation happens separately.
-static func resolve_wounds_and_saves(result: ShootingResult, dice: DiceRoller) -> void:
+static func resolve_wounds_and_saves(result: CombatResult, dice: DiceRoller) -> void:
     var profile := result.target_squad.data.profile if result.target_squad.data else null
     var toughness := profile.toughness if profile else 0
     var armor_save := profile.armor_save if profile else 0
