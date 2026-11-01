@@ -16,6 +16,8 @@ const PLAYER_COLORS := {
 const NEUTRAL_COLOR := Color(0.6, 0.6, 0.6)
 const SELECTION_COLOR := Color(1.0, 0.86, 0.35)
 const ACTIVE_COLOR := Color(1.0, 1.0, 1.0)
+const SHAKEN_COLOR := Color(1.0, 0.65, 0.15)
+const BROKEN_COLOR := Color(0.95, 0.15, 0.15)
 ## Radius of a model dot, in pixels; also its click radius.
 const MODEL_RADIUS := 5.0
 
@@ -43,6 +45,11 @@ var selected := false:
 var activation_display := ActivationDisplay.READY:
     set(value):
         activation_display = value
+        queue_redraw()
+## Display copy of the squad's SquadState.MoraleStatus, pushed in by SquadLayer.
+var morale_status := SquadState.MoraleStatus.STEADY:
+    set(value):
+        morale_status = value
         queue_redraw()
 ## Pixel offsets of the squad's models from the marker, set by SquadLayer.
 var model_offsets: Array[Vector2] = []:
@@ -113,3 +120,9 @@ func _draw() -> void:
         draw_circle(offset, MODEL_RADIUS - 1.5, color)
     draw_circle(Vector2.ZERO, radius, color.darkened(0.45))
     draw_circle(Vector2.ZERO, radius - 4.0, color)
+    if morale_status == SquadState.MoraleStatus.SHAKEN:
+        draw_arc(Vector2.ZERO, radius + 2.0, PI, TAU, 16, SHAKEN_COLOR, 4.0)
+    elif morale_status == SquadState.MoraleStatus.BROKEN:
+        var r := radius * 0.6
+        draw_line(Vector2(-r, -r), Vector2(r, r), BROKEN_COLOR, 4.0)
+        draw_line(Vector2(-r, r), Vector2(r, -r), BROKEN_COLOR, 4.0)

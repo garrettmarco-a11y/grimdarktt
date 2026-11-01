@@ -1,8 +1,8 @@
 extends CanvasLayer
 class_name HUD
 ## Displays game state. Reads from the turn manager, selection, activation,
-## movement, shooting and assault controllers and the casualty allocator
-## through signals only.
+## movement, shooting, assault and morale controllers and the casualty
+## allocator through signals only.
 
 @onready var phase_banner: PhaseBanner = $PhaseBanner
 @onready var squad_info_panel: SquadInfoPanel = $SquadInfoPanel
@@ -30,6 +30,23 @@ func bind_movement(movement: MovementController) -> void:
 
 func bind_shooting(shooting: ShootingController) -> void:
     shooting.shot_rejected.connect(_on_shot_rejected)
+
+
+func bind_morale(morale: MoraleController) -> void:
+    morale.morale_tested.connect(_on_morale_tested)
+    morale.consolidated.connect(_on_consolidated)
+    activation_panel.bind_morale(morale)
+
+
+func _on_morale_tested(result: MoraleResult) -> void:
+    order_feedback.modulate = Color.WHITE if result.passed else Color(1.0, 0.65, 0.4)
+    order_feedback.text = format_morale_result(result)
+
+
+func _on_consolidated(state: SquadState) -> void:
+    order_feedback.modulate = Color.WHITE
+    order_feedback.text = "%s consolidates: Shaken removed, half movement, no shooting or assault this turn" \
+        % state.data.display_name
 
 
 func bind_assault(assault: AssaultController) -> void:
@@ -87,6 +104,8 @@ func _on_shot_rejected(_firing: SquadState, _target: SquadState, result: Shootin
             order_feedback.text = "Cannot shoot your own squad"
         ShootingRules.OrderResult.ALLOCATION_PENDING:
             order_feedback.text = "Allocate the pending wounds first"
+        ShootingRules.OrderResult.MORALE_RESTRICTED:
+            order_feedback.text = "Morale: this squad cannot shoot this turn"
 
 
 func _on_assault_rejected(_attacker: SquadState, _target: SquadState, result: AssaultRules.OrderResult) -> void:
@@ -104,6 +123,8 @@ func _on_assault_rejected(_attacker: SquadState, _target: SquadState, result: As
             order_feedback.text = "Cannot assault your own squad"
         AssaultRules.OrderResult.ALLOCATION_PENDING:
             order_feedback.text = "Allocate the pending wounds first"
+        AssaultRules.OrderResult.MORALE_RESTRICTED:
+            order_feedback.text = "Morale: this squad cannot assault this turn"
 
 
 func _on_allocation_required(result: CombatResult, _wounds_left: int) -> void:
@@ -139,6 +160,31 @@ static func format_combat_result(result: CombatResult) -> String:
         lines.append("%s: allocating wounds" % target)
     else:
         lines.append("%s: %d models left" % [target, result.models_remaining])
+    return "\n".join(lines)
+
+
+static func format_morale_result(result: MoraleResult) -> String:
+    var lines := PackedStringArray()
+    var kind: String = ["morale test", "rally test", "assault-loss test"][result.kind]
+    var ld := "Ld %d" % result.leadership
+    if result.below_half:
+        ld += " (%d, -1 below half)" % result.base_leadership
+    lines.append("%s %s: %d+%d=%d vs %s" % [result.squad.data.display_name, kind, result.dice[0],
+        result.dice[1], result.total, ld])
+    match result.kind:
+        MoraleResult.Kind.ORDINARY:
+            lines.append("Passed" if result.passed else "Failed: Shaken")
+        MoraleResult.Kind.RALLY:
+            lines.append("Rallied: half movement, no shooting or assault this turn" if result.passed \
+                else "Failed: still Broken, no shooting or assault this turn")
+        MoraleResult.Kind.ASSAULT_LOSS:
+            lines.append("Passed: holds" if result.passed else "Failed: Broken")
+    if result.fell_back:
+        var edge := MoraleRules.edge_name(result.fallback_edge)
+        if result.removed:
+            lines.append("Fell back off the %s edge: removed" % edge)
+        else:
+            lines.append("Fell back %.1f towards the %s edge" % [result.fallback_from.distance_to(result.fallback_to), edge])
     return "\n".join(lines)
 
 

@@ -15,6 +15,9 @@ class_name ActivationController
 ##     activation ends. With no eligible squads the phase passes straight away.
 
 signal activation_changed
+## A squad's activation has just started; e.g. MoraleController runs mandatory
+## tests here. Emitted after activation_changed.
+signal squad_activated(state: SquadState)
 
 enum Result { OK, NO_SQUAD, NOT_IN_PHASE, ACTIVATION_IN_PROGRESS, WRONG_PLAYER, ALREADY_ACTIVATED, NOT_ELIGIBLE }
 
@@ -96,6 +99,7 @@ func activate(state: SquadState) -> Result:
     active_squad = state
     _turn_manager.start_activation()
     activation_changed.emit()
+    squad_activated.emit(state)
     return result
 
 

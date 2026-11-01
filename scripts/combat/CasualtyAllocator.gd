@@ -84,4 +84,7 @@ func _finish(outcome: CombatResult) -> void:
     if outcome.target_destroyed:
         _battle.remove_squad(target.squad_id)
     resolved.emit(outcome)
-    _activation.end_activation()
+    # A listener may already have removed the attacker (ending its activation
+    # through BattleState); never end an activation twice.
+    if _activation.is_active_squad(outcome.attacker_squad):
+        _activation.end_activation()

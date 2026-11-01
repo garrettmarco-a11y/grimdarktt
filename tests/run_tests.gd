@@ -32,6 +32,15 @@ class ScriptedDice extends DiceRoller:
         return rolls.pop_front()
 
 
+## Counts end_activation calls, to catch an activation being ended twice.
+class CountingActivation extends ActivationController:
+    var end_calls := 0
+
+    func end_activation() -> bool:
+        end_calls += 1
+        return super()
+
+
 func _initialize() -> void:
     _run_all.call_deferred()
 
@@ -796,7 +805,9 @@ func _complete_phase(activation: ActivationController, battle: BattleState, tm: 
             break
         activation.activate(next)
         order.append(next.squad_id)
-        activation.end_activation()
+        # Some activations end by themselves (e.g. Morale tests).
+        if activation.is_active_squad(next):
+            activation.end_activation()
     return order
 
 
@@ -2294,6 +2305,523 @@ func test_assault_in_main_scene() -> void:
     _check(feedback.text.contains("Raider Squad: 1 models left"), "remaining models")
     _check(activation.has_activated(line), "Line Squad's activation spent")
     _check_eq(panel.player_label.text, "Player 2 to activate", "control passes")
+    main.queue_free()
+    await process_frame
+
+
+## A started game with every controller bound, including morale with scripted
+## dice. Squads are [SquadState] built by _make_shooter; Leadership 7.
+func _morale_fixture(squads: Array, morale_rolls: Array[int] = []) -> Dictionary:
+    var battle := BattleState.new()
+    for state in squads:
+        state.data.profile.leadership = 7
+        battle.add_squad(state)
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var movement := MovementController.new()
+    movement.bind(battle, tm, Vector2(48.0, 32.0))
+    movement.activation = activation
+    var allocator := CasualtyAllocator.new()
+    allocator.bind(activation, battle)
+    var shooting := ShootingController.new()
+    shooting.bind(tm, activation, battle, allocator)
+    var assault := AssaultController.new()
+    assault.bind(tm, activation, battle, allocator)
+    var morale := MoraleController.new()
+    morale.bind(battle, tm, activation, Vector2(48.0, 32.0))
+    morale.dice = ScriptedDice.new(morale_rolls)
+    tm.start_game()
+    return {"battle": battle, "tm": tm, "activation": activation, "movement": movement,
+        "shooting": shooting, "assault": assault, "morale": morale}
+
+
+func _free_morale_fixture(f: Dictionary) -> void:
+    for key in ["tm", "activation", "movement", "shooting", "assault", "morale"]:
+        f[key].free()
+
+
+## Plays phases (activating and ending every squad) until `phase` of `turn`.
+func _advance_to(f: Dictionary, phase: TurnManager.Phase, turn: int) -> void:
+    for i in 12:
+        if f.tm.turn_number == turn and f.tm.current_phase == phase:
+            return
+        _complete_phase(f.activation, f.battle, f.tm)
+
+
+func _squad(squad_id: StringName, player: int, position: Vector2, model_count: int, weapon: WeaponProfile = null,
+        melee: WeaponProfile = null) -> SquadState:
+    var models := []
+    for i in model_count:
+        models.append(["M%d" % i, weapon, Vector2(0.0, float(i)), melee])
+    return _make_shooter(squad_id, player, position, models)
+
+
+func test_morale_2d6_boundaries() -> void:
+    _check(MoraleRules.passes(7, 7), "total equal to Leadership passes")
+    _check(MoraleRules.passes(2, 7), "low total passes")
+    _check(not MoraleRules.passes(8, 7), "total above Leadership fails")
+    var dice := ScriptedDice.new([3, 4])
+    _check_eq(MoraleRules.roll_2d6(dice), [3, 4], "2D6 is two D6 rolls")
+    var squad := _squad(&"s", P1, Vector2(10.0, 10.0), 2)
+    squad.data.profile.leadership = 7
+    var f := _morale_fixture([squad], [4, 3])
+    var result: MoraleResult = f.morale.resolve_assault_loss(squad)
+    _check_eq([result.dice, result.total, result.leadership, result.passed], [[4, 3], 7, 7, true], "7 vs Ld 7 passes")
+    f.morale.dice = ScriptedDice.new([4, 4])
+    result = f.morale.resolve_assault_loss(squad)
+    _check_eq([result.total, result.passed], [8, false], "8 vs Ld 7 fails")
+    _free_morale_fixture(f)
+
+
+func test_below_half_strength_modifier() -> void:
+    var four := _squad(&"four", P1, Vector2(10.0, 10.0), 4)
+    four.data.profile.leadership = 7
+    _check_eq(four.get_starting_model_count(), 4, "starting strength")
+    four.take_wound(3)
+    _check(not four.is_below_half_strength(), "3 of 4 is not below half")
+    four.take_wound(2)
+    _check(not four.is_below_half_strength(), "exactly half (2 of 4) does not qualify")
+    _check_eq(MoraleRules.effective_leadership(four), 7, "no modifier at exactly half")
+    four.take_wound(1)
+    _check(four.is_below_half_strength(), "1 of 4 is below half")
+    _check_eq(MoraleRules.effective_leadership(four), 6, "-1 Leadership below half")
+    var three := _squad(&"three", P1, Vector2(10.0, 10.0), 3)
+    three.take_wound(2)
+    _check(not three.is_below_half_strength(), "2 of 3 is not below half")
+    three.take_wound(1)
+    _check(three.is_below_half_strength(), "1 of 3 is below half")
+    var f := _morale_fixture([four], [4, 3])
+    var result: MoraleResult = f.morale.resolve_assault_loss(four)
+    _check(result.below_half and result.base_leadership == 7 and result.leadership == 6, "result records the modifier")
+    _check(not result.passed, "7 fails against Ld 6")
+    _free_morale_fixture(f)
+
+
+func test_ordinary_morale_phase() -> void:
+    var hurt := _squad(&"p1_hurt", P1, Vector2(10.0, 10.0), 4)
+    var lucky := _squad(&"p2_lucky", P2, Vector2(30.0, 10.0), 3)
+    var fresh := _squad(&"p2_fresh", P2, Vector2(30.0, 20.0), 1)
+    # p2_lucky rolls 3+4=7 (passes Ld 7); p1_hurt rolls 6+5=11 (fails).
+    var f := _morale_fixture([hurt, lucky, fresh], [3, 4, 6, 5])
+    hurt.take_wound(3)
+    hurt.take_wound(2)
+    hurt.take_wound(1)
+    lucky.take_wound(2)
+    var tested := []
+    f.morale.morale_tested.connect(func(r): tested.append(r.squad.squad_id))
+    _advance_to(f, Phase.MORALE, 1)
+    _check_eq(f.tm.current_phase, Phase.MORALE, "Morale phase")
+    _check_eq([f.tm.get_remaining_activations(P1), f.tm.get_remaining_activations(P2)], [1, 1], "only flagged squads")
+    _check_eq(f.activation.get_active_player(), P2, "Player 2 has priority (more squads)")
+    _check_eq(f.activation.activate(lucky), ActivationController.Result.OK, "p2_lucky activates")
+    _check_eq(f.activation.active_squad, null, "activation ended by itself after the test")
+    _check_eq(lucky.morale_status, SquadState.MoraleStatus.STEADY, "pass: no status change")
+    _check(not lucky.lost_models_since_morale, "loss flag cleared")
+    _check_eq(f.activation.activate(hurt), ActivationController.Result.OK, "p1_hurt activates")
+    _check_eq(hurt.morale_status, SquadState.MoraleStatus.SHAKEN, "fail: Shaken")
+    _check(not hurt.lost_models_since_morale, "loss flag cleared")
+    _check_eq(tested, [&"p2_lucky", &"p1_hurt"], "one test each, despite three casualties")
+    _check(f.morale.dice.rolls.is_empty(), "exactly two dice per test")
+    _check_eq(f.tm.turn_number, 2, "turn advances after the Morale phase")
+    _free_morale_fixture(f)
+
+
+func test_broken_squad_skips_ordinary_test() -> void:
+    var broken := _squad(&"p1_b", P1, Vector2(10.0, 10.0), 3)
+    var other := _squad(&"p2_o", P2, Vector2(30.0, 10.0), 1)
+    var f := _morale_fixture([broken, other], [])
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    broken.rally_attempted_this_turn = true
+    broken.take_wound(2)
+    _advance_to(f, Phase.MORALE, 1)
+    _check_eq(f.activation.activate(broken), ActivationController.Result.OK, "Broken squad's Morale activation")
+    _check_eq(broken.morale_status, SquadState.MoraleStatus.BROKEN, "still Broken; no ordinary test")
+    _check(not broken.lost_models_since_morale, "loss flag still cleared")
+    _check_eq(f.tm.turn_number, 2, "activation ended by itself")
+    _free_morale_fixture(f)
+
+
+func test_no_eligible_squads_skip_morale() -> void:
+    var a := _squad(&"p1_a", P1, Vector2(10.0, 10.0), 1)
+    var b := _squad(&"p2_b", P2, Vector2(30.0, 10.0), 1)
+    var f := _morale_fixture([a, b], [])
+    _advance_to(f, Phase.MOVEMENT, 2)
+    _check_eq(f.tm.turn_number, 2, "Morale passed straight to turn 2")
+    _free_morale_fixture(f)
+
+
+func test_shaken_halves_movement() -> void:
+    var shaken := _squad(&"p1_s", P1, Vector2(10.0, 10.0), 1)
+    var steady := _squad(&"p2_t", P2, Vector2(30.0, 10.0), 1)
+    var f := _morale_fixture([shaken, steady], [])
+    shaken.morale_status = SquadState.MoraleStatus.SHAKEN
+    _advance_to(f, Phase.MOVEMENT, 2)
+    _check_eq(shaken.movement_allowance, 3.0, "Shaken: half of M 6")
+    _check_eq(steady.movement_allowance, 6.0, "Steady: full M")
+    _check_eq(MoraleRules.movement_factor(shaken), 0.5, "shared movement factor")
+    f.activation.activate(shaken)
+    _check_eq(f.movement.order_move(shaken, Vector2(13.5, 10.0)), MovementRules.Result.OUT_OF_RANGE, "3.5 refused")
+    _check_eq(f.movement.order_move(shaken, Vector2(13.0, 10.0)), MovementRules.Result.OK, "3 allowed")
+    _free_morale_fixture(f)
+
+
+func test_shaken_hit_penalty_in_shooting_and_assault() -> void:
+    var gun := _make_weapon(24.0, 4)
+    var blade := _make_melee(4)
+    var attacker := _make_shooter(&"a", P1, Vector2(10.0, 10.0), [["A", gun, Vector2.ZERO, blade]], 4)
+    var target := _make_shooter(&"t", P2, Vector2(11.0, 10.0), [["T", null, Vector2.ZERO]])
+    _check_eq(MoraleRules.hit_target(attacker), 4, "Steady: Quality 4")
+    var shot := ShootingRules.resolve(attacker, target, LineOfSight.new(), ScriptedDice.new([3, 4, 5, 6]))
+    var melee := AssaultRules.resolve(attacker, target, ScriptedDice.new([3, 4, 5, 6]))
+    _check_eq([shot.get_hits(), melee.get_hits()], [3, 3], "Steady: 4, 5, 6 hit in both")
+    attacker.morale_status = SquadState.MoraleStatus.SHAKEN
+    _check_eq(MoraleRules.hit_target(attacker), 5, "Shaken: -1 to hit means 5+")
+    shot = ShootingRules.resolve(attacker, target, LineOfSight.new(), ScriptedDice.new([3, 4, 5, 6]))
+    melee = AssaultRules.resolve(attacker, target, ScriptedDice.new([3, 4, 5, 6]))
+    _check_eq([shot.get_hits(), melee.get_hits()], [2, 2], "Shaken: only 5 and 6 hit in both")
+    attacker.data.profile.quality = 6
+    _check_eq(MoraleRules.hit_target(attacker), 7, "Shaken Quality 6 needs 7+")
+    shot = ShootingRules.resolve(attacker, target, LineOfSight.new(), ScriptedDice.new([6, 6, 6, 6]))
+    _check_eq(shot.get_hits(), 0, "no automatic hit on a 6")
+    _check(ShootingRules.is_hit(4, 4) and not ShootingRules.is_hit(3, 4), "underlying hit rule unchanged")
+
+
+func test_shaken_consolidation() -> void:
+    var gun := _make_weapon(30.0, 1)
+    var shaken := _squad(&"p1_s", P1, Vector2(10.0, 10.0), 2, gun, _make_melee(1))
+    var enemy := _squad(&"p2_e", P2, Vector2(11.0, 13.0), 1)
+    var other := _squad(&"p1_o", P1, Vector2(5.0, 25.0), 1)
+    var f := _morale_fixture([shaken, enemy, other], [])
+    var morale: MoraleController = f.morale
+    shaken.morale_status = SquadState.MoraleStatus.SHAKEN
+    _advance_to(f, Phase.MOVEMENT, 2)
+    _check_eq(morale.consolidate(shaken), MoraleController.ConsolidateResult.NOT_ACTIVATED, "must be activated")
+    f.activation.activate(other)
+    f.activation.end_activation()
+    f.activation.activate(enemy)
+    _check_eq(morale.consolidate(enemy), MoraleController.ConsolidateResult.NOT_SHAKEN, "only Shaken squads")
+    f.activation.end_activation()
+    f.activation.activate(shaken)
+    var events := []
+    morale.consolidated.connect(func(s): events.append(s.squad_id))
+    _check_eq(morale.consolidate(shaken), MoraleController.ConsolidateResult.OK, "consolidates")
+    _check_eq(events, [&"p1_s"], "consolidation reported")
+    _check_eq(shaken.morale_status, SquadState.MoraleStatus.STEADY, "Shaken removed")
+    _check(shaken.morale_restricted_this_turn, "restricted for the turn")
+    _check_eq(shaken.movement_allowance, 3.0, "half movement")
+    _check_eq(f.movement.order_move(shaken, Vector2(10.0, 7.0)), MovementRules.Result.OK, "moves 3")
+    f.activation.end_activation()
+    _check_eq(f.tm.current_phase, Phase.SHOOTING, "Shooting phase")
+    _check_eq(f.activation.activate(shaken), ActivationController.Result.OK, "Player 1 activates it first")
+    _check_eq(f.shooting.order_shot(shaken, enemy), ShootingRules.OrderResult.MORALE_RESTRICTED, "cannot shoot")
+    _check(f.activation.is_active_squad(shaken), "refusal leaves the activation open")
+    _check_eq(morale.consolidate(shaken), MoraleController.ConsolidateResult.WRONG_PHASE, "consolidate only in Movement")
+    f.activation.end_activation()
+    _advance_to(f, Phase.ASSAULT, 2)
+    _check_eq(f.activation.activate(shaken), ActivationController.Result.OK, "Player 1 activates it first")
+    _check_eq(f.assault.order_assault(shaken, enemy), AssaultRules.OrderResult.MORALE_RESTRICTED, "cannot assault")
+    f.activation.end_activation()
+    _advance_to(f, Phase.MOVEMENT, 3)
+    _check(not shaken.morale_restricted_this_turn, "restriction lifted next turn")
+    _check_eq(shaken.movement_allowance, 6.0, "full movement next turn")
+    _free_morale_fixture(f)
+
+
+func test_shaken_without_consolidating_keeps_penalties() -> void:
+    var gun := _make_weapon(30.0, 1)
+    var shaken := _squad(&"p1_s", P1, Vector2(10.0, 10.0), 1, gun)
+    var enemy := _squad(&"p2_e", P2, Vector2(20.0, 10.0), 1)
+    var f := _morale_fixture([shaken, enemy], [])
+    shaken.morale_status = SquadState.MoraleStatus.SHAKEN
+    _advance_to(f, Phase.SHOOTING, 2)
+    f.shooting.dice = ScriptedDice.new([4])
+    var results := []
+    f.shooting.shot_resolved.connect(func(r): results.append(r))
+    f.activation.activate(shaken)
+    _check_eq(f.shooting.order_shot(shaken, enemy), ShootingRules.OrderResult.OK, "Shaken squad may still shoot")
+    _check_eq(results[0].get_hits(), 0, "a 4 misses at the Shaken 5+")
+    _check_eq(shaken.morale_status, SquadState.MoraleStatus.SHAKEN, "still Shaken")
+    _advance_to(f, Phase.MOVEMENT, 3)
+    _check_eq(shaken.movement_allowance, 3.0, "still halved next turn")
+    _free_morale_fixture(f)
+
+
+func test_broken_overrides_shaken() -> void:
+    var squad := _squad(&"p1_s", P1, Vector2(24.0, 16.0), 2)
+    var f := _morale_fixture([squad], [6, 6])
+    squad.morale_status = SquadState.MoraleStatus.SHAKEN
+    var result: MoraleResult = f.morale.resolve_assault_loss(squad)
+    _check_eq([result.status_before, result.status_after], [SquadState.MoraleStatus.SHAKEN, SquadState.MoraleStatus.BROKEN],
+        "Shaken squad that fails becomes Broken")
+    _check_eq(squad.morale_status, SquadState.MoraleStatus.BROKEN, "single status: Broken, not both")
+    _check_eq(MoraleRules.movement_factor(squad), 1.0, "Shaken movement penalty no longer applies")
+    _free_morale_fixture(f)
+
+
+func test_broken_rally_once_per_turn() -> void:
+    var broken := _squad(&"p1_b", P1, Vector2(24.0, 16.0), 1)
+    var enemy := _squad(&"p2_e", P2, Vector2(40.0, 16.0), 1)
+    var f := _morale_fixture([broken, enemy], [6, 6])
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    var rallies := []
+    f.morale.morale_tested.connect(func(r): rallies.append(r.kind))
+    f.activation.activate(broken)
+    _check_eq(rallies, [MoraleResult.Kind.RALLY], "rally test at the first activation")
+    _check(broken.rally_attempted_this_turn, "attempt recorded")
+    _advance_to(f, Phase.SHOOTING, 1)
+    f.activation.activate(broken)
+    _check_eq(rallies.size(), 1, "no second rally attempt this turn")
+    _free_morale_fixture(f)
+
+
+func test_successful_rally() -> void:
+    var gun := _make_weapon(30.0, 1)
+    var broken := _squad(&"p1_b", P1, Vector2(24.0, 16.0), 1, gun, _make_melee(1))
+    var enemy := _squad(&"p2_e", P2, Vector2(25.0, 16.0), 1)
+    var f := _morale_fixture([broken, enemy], [3, 4])
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    f.activation.activate(broken)
+    _check_eq(broken.morale_status, SquadState.MoraleStatus.STEADY, "3+4=7 rallies: Broken removed")
+    _check(f.activation.is_active_squad(broken), "activation stays open to move")
+    _check_eq(broken.movement_allowance, 3.0, "half movement")
+    _check_eq(f.movement.order_move(broken, Vector2(24.0, 19.5)), MovementRules.Result.OUT_OF_RANGE, "3.5 refused")
+    _check_eq(f.movement.order_move(broken, Vector2(24.0, 19.0)), MovementRules.Result.OK, "3 allowed")
+    f.activation.end_activation()
+    _advance_to(f, Phase.SHOOTING, 1)
+    f.activation.activate(broken)
+    _check_eq(f.shooting.order_shot(broken, enemy), ShootingRules.OrderResult.MORALE_RESTRICTED, "no shooting this turn")
+    f.activation.end_activation()
+    _advance_to(f, Phase.ASSAULT, 1)
+    f.activation.activate(broken)
+    _check_eq(f.assault.order_assault(broken, enemy), AssaultRules.OrderResult.MORALE_RESTRICTED, "no assault this turn")
+    _free_morale_fixture(f)
+
+
+func test_failed_rally_falls_back_full_movement() -> void:
+    var broken := _squad(&"p1_b", P1, Vector2(10.0, 12.0), 1, _make_weapon(30.0, 1))
+    var enemy := _squad(&"p2_e", P2, Vector2(40.0, 16.0), 1)
+    var f := _morale_fixture([broken, enemy], [6, 5])
+    broken.morale_status = SquadState.MoraleStatus.SHAKEN
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    var results := []
+    f.morale.morale_tested.connect(func(r): results.append(r))
+    f.activation.activate(broken)
+    var result: MoraleResult = results[0]
+    _check(not result.passed, "6+5=11 fails")
+    _check_eq(broken.morale_status, SquadState.MoraleStatus.BROKEN, "remains Broken")
+    _check_eq(result.fallback_edge, MoraleRules.Edge.WEST, "west edge is nearest (10 away)")
+    _check_eq(broken.board_position, Vector2(4.0, 12.0), "fell back its full M of 6, even though it had been Shaken")
+    _check(broken.movement_complete, "no further voluntary movement")
+    _check_eq(f.activation.active_squad, null, "activation ended")
+    _check(broken.morale_restricted_this_turn, "no shooting or assault this turn")
+    _advance_to(f, Phase.SHOOTING, 1)
+    f.activation.activate(broken)
+    _check_eq(f.shooting.order_shot(broken, enemy), ShootingRules.OrderResult.MORALE_RESTRICTED, "cannot shoot")
+    f.activation.end_activation()
+    f.morale.dice = ScriptedDice.new([2, 2])
+    _advance_to(f, Phase.MOVEMENT, 2)
+    f.activation.activate(broken)
+    _check_eq(broken.morale_status, SquadState.MoraleStatus.STEADY, "rallies at the first activation next turn")
+    _free_morale_fixture(f)
+
+
+func test_fallback_edge_selection() -> void:
+    var board := Vector2(48.0, 32.0)
+    _check_eq(MoraleRules.nearest_edge(Vector2(10.0, 16.0), board), MoraleRules.Edge.WEST, "west nearest")
+    _check_eq(MoraleRules.nearest_edge(Vector2(40.0, 16.0), board), MoraleRules.Edge.EAST, "east nearest")
+    _check_eq(MoraleRules.nearest_edge(Vector2(24.0, 3.0), board), MoraleRules.Edge.NORTH, "north nearest")
+    _check_eq(MoraleRules.nearest_edge(Vector2(24.0, 30.0), board), MoraleRules.Edge.SOUTH, "south nearest")
+    _check_eq(MoraleRules.nearest_edge(Vector2(5.0, 5.0), board), MoraleRules.Edge.WEST, "west/north tie: west")
+    _check_eq(MoraleRules.nearest_edge(Vector2(43.0, 27.0), board), MoraleRules.Edge.EAST, "east/south tie: east")
+    _check_eq(MoraleRules.nearest_edge(Vector2(24.0, 16.0), board), MoraleRules.Edge.NORTH, "north/south tie: north")
+    _check_eq(MoraleRules.nearest_edge(Vector2(16.0, 16.0), Vector2(32.0, 32.0)), MoraleRules.Edge.WEST, "four-way tie: west")
+    _check_eq(MoraleRules.fallback_destination(Vector2(24.0, 30.0), board, 6.0), Vector2(24.0, 36.0), "south, beyond the edge")
+    _check(MoraleRules.is_off_board(Vector2(24.0, 36.0), board), "beyond the edge is off the battlefield")
+    _check(not MoraleRules.is_off_board(Vector2(0.0, 12.0), board), "on the edge is still on the battlefield")
+
+
+func test_fallback_off_battlefield_removes_squad() -> void:
+    var broken := _squad(&"p1_b", P1, Vector2(3.0, 12.0), 2)
+    var spare := _squad(&"p1_s", P1, Vector2(24.0, 12.0), 1)
+    var enemy := _squad(&"p2_e", P2, Vector2(40.0, 16.0), 1)
+    var edge := _squad(&"p2_x", P2, Vector2(6.0, 16.0), 1)
+    var f := _morale_fixture([broken, spare, enemy, edge], [6, 6, 6, 6])
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    var removed := []
+    f.battle.squad_removed.connect(func(s): removed.append(s.squad_id))
+    var results := []
+    f.morale.morale_tested.connect(func(r): results.append(r))
+    f.activation.activate(broken)
+    _check(results[0].removed, "fell back off the west edge")
+    _check_eq(removed, [&"p1_b"], "removed through BattleState")
+    _check(broken.is_destroyed(), "its models count as casualties")
+    _check_eq(f.activation.active_squad, null, "activation ended by the removal")
+    _check_eq(f.activation.get_active_player(), P2, "play passes on normally")
+    _check_eq(f.tm.get_remaining_activations(P1), 1, "spent activation, not a second removal")
+    # A fall-back that ends exactly on the edge stays on the battlefield.
+    edge.morale_status = SquadState.MoraleStatus.BROKEN
+    f.activation.activate(edge)
+    _check_eq(edge.board_position, Vector2(0.0, 16.0), "6 to the west edge exactly")
+    _check(f.battle.get_squad(&"p2_x") != null, "still on the battlefield")
+    _free_morale_fixture(f)
+
+
+func test_broken_squad_cannot_initiate_assault() -> void:
+    var broken := _squad(&"p1_b", P1, Vector2(24.0, 16.0), 1, null, _make_melee(1))
+    var enemy := _squad(&"p2_e", P2, Vector2(25.0, 16.0), 1)
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    _check(not MoraleRules.may_attack(broken), "Broken squads may not attack")
+    _check_eq(AssaultRules.validate_order(broken, enemy, Phase.ASSAULT, true), AssaultRules.OrderResult.MORALE_RESTRICTED,
+        "assault refused for a Broken squad")
+    _check_eq(ShootingRules.validate_order(broken, enemy, Phase.SHOOTING, true), ShootingRules.OrderResult.MORALE_RESTRICTED,
+        "shooting refused for a Broken squad")
+
+
+func test_resolve_assault_loss() -> void:
+    var loser := _squad(&"p1_l", P1, Vector2(30.0, 10.0), 1)
+    var near_edge := _squad(&"p1_n", P1, Vector2(30.0, 27.0), 1)
+    var f := _morale_fixture([loser, near_edge], [2, 3, 5, 5, 6, 6])
+    var result: MoraleResult = f.morale.resolve_assault_loss(loser)
+    _check(result.passed and result.kind == MoraleResult.Kind.ASSAULT_LOSS, "5 passes")
+    _check_eq(loser.morale_status, SquadState.MoraleStatus.STEADY, "pass: not Broken")
+    _check(not result.fell_back and loser.board_position == Vector2(30.0, 10.0), "pass: no fall-back")
+    result = f.morale.resolve_assault_loss(loser)
+    _check_eq(loser.morale_status, SquadState.MoraleStatus.BROKEN, "fail: Broken")
+    _check_eq(result.fallback_edge, MoraleRules.Edge.NORTH, "north edge is nearest (10 away)")
+    _check_eq(loser.board_position, Vector2(30.0, 4.0), "fell back its full M of 6")
+    _check(not result.removed and f.battle.get_squad(&"p1_l") != null, "still on the battlefield")
+    _check(loser.rally_attempted_this_turn and loser.morale_restricted_this_turn,
+        "broken mid-turn: no rally until next turn, no attacking this turn")
+    result = f.morale.resolve_assault_loss(near_edge)
+    _check_eq(result.fallback_edge, MoraleRules.Edge.SOUTH, "south edge is nearest (5 away)")
+    _check(result.removed, "a 6 fall-back from 5 away leaves the battlefield")
+    _check_eq(f.battle.get_squad(&"p1_n"), null, "removed through BattleState")
+    _free_morale_fixture(f)
+
+
+func test_rallied_squad_can_still_be_assaulted() -> void:
+    var rallied := _squad(&"p1_r", P1, Vector2(24.0, 16.0), 1, null, _make_melee(1))
+    var enemy := _squad(&"p2_e", P2, Vector2(25.0, 16.0), 1, null, _make_melee(1))
+    rallied.morale_restricted_this_turn = true
+    _check_eq(AssaultRules.validate_order(enemy, rallied, Phase.ASSAULT, true), AssaultRules.OrderResult.OK,
+        "an enemy may still assault the rallied squad")
+    var counter := AssaultRules.resolve(rallied, enemy, ScriptedDice.new([6]))
+    _check_eq(counter.get_hits(), 1, "its melee resolution still works for future defensive fighting")
+    _check_eq(AssaultRules.validate_order(rallied, enemy, Phase.ASSAULT, true), AssaultRules.OrderResult.MORALE_RESTRICTED,
+        "but it may not initiate an assault")
+
+
+func test_allocator_handles_attacker_removed_during_resolution() -> void:
+    var battle := BattleState.new()
+    var attacker := _squad(&"p1_a", P1, Vector2(10.0, 10.0), 1)
+    var target := _squad(&"p2_t", P2, Vector2(20.0, 10.0), 1)
+    battle.add_squad(attacker)
+    battle.add_squad(target)
+    var tm := TurnManager.new()
+    var activation := CountingActivation.new()
+    activation.bind(battle, tm)
+    var allocator := CasualtyAllocator.new()
+    allocator.bind(activation, battle)
+    tm.start_game()
+    activation.activate(attacker)
+    allocator.resolved.connect(func(_r): battle.remove_squad(&"p1_a"))
+    var result := CombatResult.new()
+    result.attacker_squad = attacker
+    result.target_squad = target
+    allocator.begin(result)
+    _check_eq(activation.end_calls, 1, "the activation is ended exactly once")
+    _check_eq(activation.active_squad, null, "no squad left active")
+    _check_eq(activation.get_active_player(), P2, "play passes on")
+    tm.free()
+    activation.free()
+
+
+func test_steady_squads_unaffected_by_morale() -> void:
+    var steady := _make_shooter(&"s", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO]], 4)
+    _check_eq(steady.morale_status, SquadState.MoraleStatus.STEADY, "squads start Steady")
+    _check_eq(MoraleRules.hit_target(steady), 4, "hit target is Quality")
+    _check_eq(MoraleRules.movement_factor(steady), 1.0, "full movement")
+    _check(MoraleRules.may_attack(steady), "may shoot and assault")
+    var a := _squad(&"p1_a", P1, Vector2(10.0, 10.0), 1)
+    var b := _squad(&"p2_b", P2, Vector2(30.0, 10.0), 1)
+    var f := _morale_fixture([a, b], [])
+    _advance_to(f, Phase.MOVEMENT, 2)
+    _check_eq([a.movement_allowance, b.movement_allowance], [6.0, 6.0], "full allowance each turn")
+    _check(f.morale.dice.rolls.is_empty(), "no morale dice rolled for Steady squads without losses")
+    _free_morale_fixture(f)
+
+
+func test_hud_morale_report() -> void:
+    var squad := _squad(&"Line", P1, Vector2(30.0, 30.0), 1)
+    var result := MoraleResult.new()
+    result.squad = squad
+    result.kind = MoraleResult.Kind.RALLY
+    result.dice = [6, 5]
+    result.total = 11
+    result.base_leadership = 7
+    result.leadership = 6
+    result.below_half = true
+    result.fell_back = true
+    result.fallback_edge = MoraleRules.Edge.SOUTH
+    result.fallback_from = Vector2(30.0, 28.0)
+    result.fallback_to = Vector2(30.0, 34.0)
+    result.removed = true
+    _check_eq(HUD.format_morale_result(result), "\n".join([
+        "Line rally test: 6+5=11 vs Ld 6 (7, -1 below half)",
+        "Failed: still Broken, no shooting or assault this turn",
+        "Fell back off the south edge: removed",
+    ]), "rally failure report")
+    result.kind = MoraleResult.Kind.ORDINARY
+    result.passed = true
+    result.below_half = false
+    result.leadership = 7
+    result.total = 7
+    result.dice = [3, 4]
+    result.fell_back = false
+    _check_eq(HUD.format_morale_result(result), "Line morale test: 3+4=7 vs Ld 7\nPassed", "ordinary pass report")
+    squad.morale_status = SquadState.MoraleStatus.SHAKEN
+    _check_eq(SquadInfoPanel.status_text(squad), "Shaken", "status text")
+    squad.morale_restricted_this_turn = true
+    _check_eq(SquadInfoPanel.status_text(squad), "Shaken (no shooting/assault)", "restriction shown")
+
+
+func test_morale_ui_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var layer: SquadLayer = main.get_node("GameBoard/Squads")
+    var activation: ActivationController = main.get_node("ActivationController")
+    var panel: ActivationPanel = main.get_node("HUD/ActivationPanel")
+    var info: SquadInfoPanel = main.get_node("HUD/SquadInfoPanel")
+    var feedback: Label = main.get_node("HUD/OrderFeedback")
+    var selection: SelectionManager = main.get_node("SelectionManager")
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    main.morale.dice = ScriptedDice.new([6, 6])
+    line.morale_status = SquadState.MoraleStatus.SHAKEN
+    _check_eq(layer.get_token(&"p1_line_squad").morale_status, SquadState.MoraleStatus.SHAKEN, "token shows Shaken")
+    _click(layer.get_token(&"p1_line_squad").global_position)
+    _check_eq(info.status_label.text, "Status: Shaken", "info panel shows Shaken")
+    _check(not panel.consolidate_button.visible, "no Consolidate before activating")
+    panel.action_button.pressed.emit()
+    _check(panel.consolidate_button.visible, "Consolidate offered to the active Shaken squad")
+    panel.consolidate_button.pressed.emit()
+    _check_eq(line.morale_status, SquadState.MoraleStatus.STEADY, "consolidated")
+    _check(not panel.consolidate_button.visible, "Consolidate no longer offered")
+    _check_eq(info.status_label.text, "Status: Steady (no shooting/assault)", "restriction shown")
+    _check(feedback.text.begins_with("Line Squad consolidates"), "consolidation reported")
+    panel.action_button.pressed.emit()
+    # Raider Squad, Broken near the east edge, fails its rally and falls off the board.
+    raider.board_position = Vector2(44.0, 16.0)
+    raider.morale_status = SquadState.MoraleStatus.BROKEN
+    _check_eq(layer.get_token(&"p2_raider_squad").morale_status, SquadState.MoraleStatus.BROKEN, "token shows Broken")
+    _click(layer.get_token(&"p2_raider_squad").global_position)
+    _check_eq(selection.selected_squad, raider, "Raider Squad selected")
+    panel.action_button.pressed.emit()
+    _check_eq(main.battle.get_squad(&"p2_raider_squad"), null, "fell back off the battlefield")
+    _check_eq(layer.get_token(&"p2_raider_squad"), null, "token removed")
+    _check_eq(selection.selected_squad, null, "selection cleared")
+    _check(feedback.text.contains("Fell back off the east edge: removed"), "fall-back reported")
+    _check_eq(activation.active_squad, null, "no activation left open")
     main.queue_free()
     await process_frame
 

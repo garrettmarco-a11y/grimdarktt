@@ -44,6 +44,12 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "Activate"
 
+[node name="ConsolidateButton" type="Button" parent="Margin/Rows"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+text = "Consolidate"
+
 [node name="HintLabel" type="Label" parent="Margin/Rows"]
 unique_name_in_owner = true
 layout_mode = 2
