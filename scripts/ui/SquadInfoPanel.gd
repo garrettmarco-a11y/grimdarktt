@@ -19,6 +19,7 @@ const EMPTY_TEXT := "No unit selected"
 @onready var leadership_value: Label = %LeadershipValue
 @onready var save_value: Label = %SaveValue
 @onready var models_label: Label = %ModelsLabel
+@onready var status_label: Label = %StatusLabel
 @onready var movement_label: Label = %MovementLabel
 
 var _shown: SquadState
@@ -33,6 +34,7 @@ func show_squad(state: SquadState) -> void:
         _shown.movement_changed.disconnect(_update_movement)
         _shown.position_changed.disconnect(_update_movement)
         _shown.models_changed.disconnect(_update_models)
+        _shown.morale_changed.disconnect(_update_status)
     _shown = null
     var squad := state.data if state else null
     if squad == null or squad.profile == null:
@@ -41,13 +43,16 @@ func show_squad(state: SquadState) -> void:
         stats_grid.visible = false
         movement_label.visible = false
         models_label.visible = false
+        status_label.visible = false
         return
     _shown = state
     state.movement_changed.connect(_update_movement)
     state.position_changed.connect(_update_movement)
     state.models_changed.connect(_update_models)
+    state.morale_changed.connect(_update_status)
     _update_movement(state)
     _update_models(state)
+    _update_status(state)
     var profile := squad.profile
     name_label.text = squad.display_name
     player_label.text = "Player %d" % squad.player
@@ -75,3 +80,15 @@ func _update_models(state: SquadState) -> void:
         wounds_left += model.wounds_remaining
     models_label.text = "Models %d/%d, %d W left" % [state.get_model_count(), state.get_models().size(), wounds_left]
     models_label.visible = true
+
+
+static func status_text(state: SquadState) -> String:
+    var text: String = ["Steady", "Shaken", "Broken"][state.morale_status]
+    if state.morale_restricted_this_turn:
+        text += " (no shooting/assault)"
+    return text
+
+
+func _update_status(state: SquadState) -> void:
+    status_label.text = "Status: %s" % status_text(state)
+    status_label.visible = true

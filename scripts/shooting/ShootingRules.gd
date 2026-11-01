@@ -11,9 +11,11 @@ class_name ShootingRules
 ##   - Range is measured from the firing model to the nearest target model; a
 ##     target exactly at the weapon's range is in range.
 ##   - The model needs line of sight to a target model that is in range.
-##   - Each attack rolls one D6 and hits on a roll >= the firer's Quality.
+##   - Each attack rolls one D6 and hits on a roll >= the firer's Quality, one
+##     higher while Shaken (MoraleRules.hit_target).
+##   - Morale may forbid shooting this turn (MoraleRules.may_attack).
 
-enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING }
+enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING, MORALE_RESTRICTED }
 
 ## Tolerance for range comparisons, in board units.
 const EPSILON := 0.001
@@ -29,6 +31,8 @@ static func validate_order(firing: SquadState, target: SquadState, phase: TurnMa
         return OrderResult.WRONG_PHASE
     if not firing_is_activated:
         return OrderResult.NOT_ACTIVATED
+    if not MoraleRules.may_attack(firing):
+        return OrderResult.MORALE_RESTRICTED
     if target.get_player() == firing.get_player():
         return OrderResult.OWN_SQUAD
     return OrderResult.OK
@@ -95,7 +99,7 @@ static func resolve(firing: SquadState, target: SquadState, los: LineOfSight,
     result.attacker_squad = firing
     result.target_squad = target
     var targets := target_points(target)
-    var quality := firing.data.profile.quality if firing.data.profile else 0
+    var quality := MoraleRules.hit_target(firing)
     for model in firing.get_living_models():
         var model_result := evaluate_model(model.get_model_name(), model.get_weapon(),
             firing.get_model_position(model), targets, los)

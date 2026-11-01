@@ -14,6 +14,8 @@ class_name MovementRules
 ##   - A destination is valid if it is on the battlefield and within the
 ##     allowance of the turn-start position.
 ##   - Once a squad has moved its full allowance its movement is complete.
+##   - Morale can reduce the allowance (MoraleRules.movement_factor, applied by
+##     MovementController); forced fall-back moves bypass these rules.
 
 enum Result { OK, NO_SQUAD, WRONG_PHASE, NOT_ACTIVATED, MOVEMENT_COMPLETE, OFF_BOARD, OUT_OF_RANGE }
 

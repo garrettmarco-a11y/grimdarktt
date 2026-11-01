@@ -46,4 +46,4 @@ func _on_turn_started(_turn: int) -> void:
 
 
 func _begin_squad_turn(state: SquadState) -> void:
-    state.begin_turn_movement(MovementRules.allowance_for(state.data))
+    state.begin_turn_movement(MovementRules.allowance_for(state.data) * MoraleRules.movement_factor(state))

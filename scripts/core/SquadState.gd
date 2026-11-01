@@ -16,6 +16,11 @@ signal position_changed(state: SquadState)
 signal movement_changed(state: SquadState)
 ## Emitted when a model takes damage, is removed, or the leader changes.
 signal models_changed(state: SquadState)
+## Emitted when morale_status or a per-turn morale restriction changes.
+signal morale_changed(state: SquadState)
+
+## Morale condition. Broken takes precedence over Shaken; they never stack.
+enum MoraleStatus { STEADY, SHAKEN, BROKEN }
 
 ## Stable identifier, taken from the squad's data at creation.
 var squad_id: StringName:
@@ -49,6 +54,23 @@ var distance_moved: float:
         return turn_start_position.distance_to(board_position)
 ## True once the squad has lost a model since its last Morale phase activation.
 var lost_models_since_morale := false
+## Current morale condition; changed by MoraleController.
+var morale_status := MoraleStatus.STEADY:
+    set(value):
+        if value == morale_status:
+            return
+        morale_status = value
+        morale_changed.emit(self)
+## True for the rest of the turn after consolidating or taking a rally test:
+## the squad may not shoot or initiate an assault. Reset at each turn start.
+var morale_restricted_this_turn := false:
+    set(value):
+        if value == morale_restricted_this_turn:
+            return
+        morale_restricted_this_turn = value
+        morale_changed.emit(self)
+## True once a Broken squad has made its rally test this turn.
+var rally_attempted_this_turn := false
 
 var _squad_id: StringName
 var _data: SquadData
@@ -81,6 +103,15 @@ func begin_turn_movement(allowance: float) -> void:
 func apply_move(destination: Vector2, complete: bool) -> void:
     board_position = destination
     movement_complete = complete
+    movement_changed.emit(self)
+
+
+## Caps this turn's allowance at `allowance` (never raises it), e.g. half
+## movement after consolidating or rallying.
+func limit_movement_allowance(allowance: float) -> void:
+    if allowance >= movement_allowance:
+        return
+    movement_allowance = allowance
     movement_changed.emit(self)
 
 
@@ -126,6 +157,16 @@ func get_leader_profile() -> UnitProfile:
     return _data.profile if _data else null
 
 
+## Original model count, removed models included.
+func get_starting_model_count() -> int:
+    return _models.size()
+
+
+## True if fewer than half the starting models survive (exactly half is not).
+func is_below_half_strength() -> bool:
+    return get_model_count() * 2 < get_starting_model_count()
+
+
 func is_destroyed() -> bool:
     return not _models.is_empty() and get_leader() == null
 
@@ -155,6 +196,21 @@ func take_wound(model_id: int) -> bool:
             _promote_leader()
     models_changed.emit(self)
     return model.removed
+
+
+## Removes every surviving model at once, e.g. when the squad falls back off
+## the battlefield. No leader is promoted. The caller removes the squad from
+## the BattleState.
+func remove_all_models() -> void:
+    var any := false
+    for model in _models:
+        if not model.removed:
+            model.removed = true
+            model.wounds_remaining = 0
+            any = true
+    if any:
+        lost_models_since_morale = true
+        models_changed.emit(self)
 
 
 ## Clears the loss flag once the squad's Morale phase opportunity is resolved.

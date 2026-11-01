@@ -12,10 +12,13 @@ class_name AssaultRules
 ##     measured centre to centre between models. Others add no attacks but never
 ##     stop the rest of the squad.
 ##   - Each attack rolls one D6 and hits on a roll >= the attacker's Quality
-##     (the established hit rule; no automatic natural-1 miss).
+##     (the established hit rule; no automatic natural-1 miss), one higher while
+##     Shaken (MoraleRules.hit_target).
+##   - Morale may forbid initiating an assault (MoraleRules.may_attack). Being
+##     attacked is unaffected: there is no defensive fighting step yet.
 ##   - Line of sight does not apply to melee.
 
-enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING }
+enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING, MORALE_RESTRICTED }
 
 ## Maximum centre-to-centre distance between an attacking model and a target
 ## model for the attacker to be engaged, in board units (inclusive).
@@ -34,6 +37,8 @@ static func validate_order(attacker: SquadState, target: SquadState, phase: Turn
         return OrderResult.WRONG_PHASE
     if not attacker_is_activated:
         return OrderResult.NOT_ACTIVATED
+    if not MoraleRules.may_attack(attacker):
+        return OrderResult.MORALE_RESTRICTED
     if target.get_player() == attacker.get_player():
         return OrderResult.OWN_SQUAD
     return OrderResult.OK
@@ -73,7 +78,7 @@ static func resolve(attacker: SquadState, target: SquadState, dice: DiceRoller) 
     result.attacker_squad = attacker
     result.target_squad = target
     var targets := ShootingRules.target_points(target)
-    var quality := attacker.data.profile.quality if attacker.data.profile else 0
+    var quality := MoraleRules.hit_target(attacker)
     for model in attacker.get_living_models():
         var model_result := evaluate_model(model.get_model_name(), model.get_melee_weapon(),
             attacker.get_model_position(model), targets)

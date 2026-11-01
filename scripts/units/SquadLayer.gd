@@ -75,8 +75,10 @@ func _add_token(state: SquadState) -> void:
     add_child(token)
     state.position_changed.connect(_sync_token_position)
     state.models_changed.connect(_sync_token_models)
+    state.morale_changed.connect(_sync_token_morale)
     _sync_token_position(state)
     _sync_token_models(state)
+    _sync_token_morale(state)
 
 
 func _remove_token(state: SquadState) -> void:
@@ -85,6 +87,7 @@ func _remove_token(state: SquadState) -> void:
         return
     state.position_changed.disconnect(_sync_token_position)
     state.models_changed.disconnect(_sync_token_models)
+    state.morale_changed.disconnect(_sync_token_morale)
     _tokens.erase(state.squad_id)
     remove_child(token)
     token.queue_free()
@@ -109,6 +112,12 @@ func _sync_token_models(state: SquadState) -> void:
         offsets.append(board.units_to_pixels(model.offset))
     token.model_offsets = offsets
     token.snap_to_target()
+
+
+func _sync_token_morale(state: SquadState) -> void:
+    var token: SquadToken = _tokens.get(state.squad_id)
+    if token:
+        token.morale_status = state.morale_status
 
 
 func _unhandled_input(event: InputEvent) -> void:
