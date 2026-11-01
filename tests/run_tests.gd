@@ -1013,7 +1013,8 @@ func _make_weapon(weapon_range: float, attacks: int) -> WeaponProfile:
     return weapon
 
 
-## A squad whose models are given as [name, weapon or null, offset] entries.
+## A squad whose models are given as [name, weapon or null, offset] entries,
+## optionally followed by a melee weapon.
 ## Temporary fixture values, not game balance data.
 func _make_shooter(squad_id: StringName, player: int, position: Vector2, models: Array,
         quality := 4, wounds := 1) -> SquadState:
@@ -1030,6 +1031,8 @@ func _make_shooter(squad_id: StringName, player: int, position: Vector2, models:
         model.model_name = entry[0]
         model.weapon = entry[1]
         model.formation_offset = entry[2]
+        if entry.size() > 3:
+            model.melee_weapon = entry[3]
         squad.models.append(model)
     return SquadState.new(squad, position)
 
@@ -1051,17 +1054,17 @@ func test_model_eligibility_reasons() -> void:
     var targets: Array[Vector2] = [Vector2(20.0, 10.0)]
     var gun := _make_weapon(12.0, 1)
     var r := ShootingRules.evaluate_model("A", gun, Vector2(10.0, 10.0), targets, los)
-    _check_eq(r.eligibility, ShootingRules.Eligibility.ELIGIBLE, "weapon, range and line of sight: can fire")
+    _check_eq(r.eligibility, CombatResult.Eligibility.ELIGIBLE, "weapon, range and line of sight: can fire")
     _check_eq(r.distance, 10.0, "distance to target")
     r = ShootingRules.evaluate_model("B", gun, Vector2(5.0, 10.0), targets, los)
-    _check_eq(r.eligibility, ShootingRules.Eligibility.OUT_OF_RANGE, "15 > 12: out of range")
+    _check_eq(r.eligibility, CombatResult.Eligibility.OUT_OF_RANGE, "15 > 12: out of range")
     r = ShootingRules.evaluate_model("C", null, Vector2(10.0, 10.0), targets, los)
-    _check_eq(r.eligibility, ShootingRules.Eligibility.NO_RANGED_WEAPON, "no weapon")
+    _check_eq(r.eligibility, CombatResult.Eligibility.NO_RANGED_WEAPON, "no weapon")
     r = ShootingRules.evaluate_model("D", _make_weapon(0.0, 1), Vector2(10.0, 10.0), targets, los)
-    _check_eq(r.eligibility, ShootingRules.Eligibility.NO_RANGED_WEAPON, "range 0 is not a ranged weapon")
+    _check_eq(r.eligibility, CombatResult.Eligibility.NO_RANGED_WEAPON, "range 0 is not a ranged weapon")
     los.add_blocker(Rect2(14.0, 8.0, 2.0, 4.0))
     r = ShootingRules.evaluate_model("E", gun, Vector2(10.0, 10.0), targets, los)
-    _check_eq(r.eligibility, ShootingRules.Eligibility.NO_LINE_OF_SIGHT, "blocked: no line of sight")
+    _check_eq(r.eligibility, CombatResult.Eligibility.NO_LINE_OF_SIGHT, "blocked: no line of sight")
 
 
 func test_range_boundaries() -> void:
@@ -1072,7 +1075,7 @@ func test_range_boundaries() -> void:
     var los := LineOfSight.new()
     var exact: Array[Vector2] = [Vector2(13.0, 1.0)]
     _check_eq(ShootingRules.evaluate_model("A", gun, Vector2(1.0, 1.0), exact, los).eligibility,
-        ShootingRules.Eligibility.ELIGIBLE, "model exactly 12 away can fire")
+        CombatResult.Eligibility.ELIGIBLE, "model exactly 12 away can fire")
 
 
 func test_line_of_sight_query() -> void:
@@ -1091,7 +1094,7 @@ func test_line_of_sight_to_any_target_model() -> void:
     los.add_blocker(Rect2(14.0, 9.0, 2.0, 2.0))
     var targets: Array[Vector2] = [Vector2(20.0, 10.0), Vector2(20.0, 14.0)]
     var r := ShootingRules.evaluate_model("A", _make_weapon(12.0, 1), Vector2(10.0, 10.0), targets, los)
-    _check_eq(r.eligibility, ShootingRules.Eligibility.ELIGIBLE, "a visible target model in range is enough")
+    _check_eq(r.eligibility, CombatResult.Eligibility.ELIGIBLE, "a visible target model in range is enough")
 
 
 func test_hit_rolls_against_quality() -> void:
@@ -1121,12 +1124,12 @@ func test_resolve_per_model_and_totals() -> void:
     ], 4)
     var target := _make_shooter(&"target", P2, Vector2(30.0, 10.0), [["T", null, Vector2.ZERO]])
     var result := ShootingRules.resolve(firing, target, LineOfSight.new(), ScriptedDice.new([5, 2, 4, 6]))
-    _check_eq(result.firing_squad, firing, "firing squad")
+    _check_eq(result.attacker_squad, firing, "firing squad")
     _check_eq(result.target_squad, target, "target squad")
     _check_eq(result.get_eligible_count(), 2, "rifle and heavy fire")
     _check_eq(result.get_ineligible_count(), 2, "leader out of range, unarmed model")
-    _check_eq(result.model_results[0].eligibility, ShootingRules.Eligibility.OUT_OF_RANGE, "leader reason")
-    _check_eq(result.model_results[3].eligibility, ShootingRules.Eligibility.NO_RANGED_WEAPON, "unarmed reason")
+    _check_eq(result.model_results[0].eligibility, CombatResult.Eligibility.OUT_OF_RANGE, "leader reason")
+    _check_eq(result.model_results[3].eligibility, CombatResult.Eligibility.NO_RANGED_WEAPON, "unarmed reason")
     _check_eq(result.model_results[1].rolls, [5], "rifle rolled once")
     _check_eq(result.model_results[2].rolls, [2, 4, 6], "heavy rolled three times")
     _check_eq(result.get_total_attacks(), 4, "total attacks")
@@ -1637,28 +1640,28 @@ func test_morale_eligibility_follows_losses() -> void:
 func test_hud_shooting_report() -> void:
     var firing := _make_shooter(&"Shooters", P1, Vector2.ZERO, [])
     var target := _make_shooter(&"Targets", P2, Vector2.ZERO, [["T", null, Vector2.ZERO]])
-    var result := ShootingResult.new()
-    result.firing_squad = firing
+    var result := CombatResult.new()
+    result.attacker_squad = firing
     result.target_squad = target
-    var gunner := ShootingResult.ModelResult.new()
+    var gunner := CombatResult.ModelResult.new()
     gunner.model_name = "Gunner"
-    gunner.eligibility = ShootingRules.Eligibility.ELIGIBLE
+    gunner.eligibility = CombatResult.Eligibility.ELIGIBLE
     gunner.rolls = [5, 2]
     gunner.hits = 1
     gunner.wound_target = 3
     gunner.wound_rolls = [4]
     gunner.wounds = 1
     gunner.save_target = 7
-    var idle := ShootingResult.ModelResult.new()
+    var idle := CombatResult.ModelResult.new()
     idle.model_name = "Pistol"
-    idle.eligibility = ShootingRules.Eligibility.OUT_OF_RANGE
+    idle.eligibility = CombatResult.Eligibility.OUT_OF_RANGE
     result.model_results = [gunner, idle]
-    var allocation := ShootingResult.Allocation.new()
+    var allocation := CombatResult.Allocation.new()
     allocation.model_name = "T"
     allocation.removed = true
     result.allocations = [allocation]
     result.target_destroyed = true
-    _check_eq(HUD.format_shooting_result(result), "\n".join([
+    _check_eq(HUD.format_combat_result(result), "\n".join([
         "Shooters shot Targets",
         "Fired: 1  Unable: 1",
         "Attacks 2: 1 hit, 1 miss",
@@ -1849,6 +1852,450 @@ func test_destroyed_target_discards_unallocated_wounds() -> void:
     _check_eq(activation.activate(other), ActivationController.Result.OK, "Player 2 activates")
     _check(shooting.order_shot(other, shooter) == ShootingRules.OrderResult.OK, "next shooter can shoot normally")
     _free_battle_fixture(f)
+
+
+## A melee weapon for tests. Temporary fixture values, not game balance data.
+func _make_melee(attacks: int, strength := 3, armor_piercing := 0) -> WeaponProfile:
+    var weapon := WeaponProfile.new()
+    weapon.weapon_name = "Blade %d" % strength
+    weapon.attacks = attacks
+    weapon.strength = strength
+    weapon.armor_piercing = armor_piercing
+    return weapon
+
+
+## A started game with `squads`, activation, shooting and assault, sharing one
+## CasualtyAllocator as in Main.
+func _assault_fixture(squads: Array) -> Dictionary:
+    var battle := BattleState.new()
+    for state in squads:
+        battle.add_squad(state)
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var allocator := CasualtyAllocator.new()
+    allocator.bind(activation, battle)
+    var shooting := ShootingController.new()
+    shooting.bind(tm, activation, battle, allocator)
+    var assault := AssaultController.new()
+    assault.bind(tm, activation, battle, allocator)
+    tm.start_game()
+    return {"battle": battle, "tm": tm, "activation": activation, "allocator": allocator,
+        "shooting": shooting, "assault": assault}
+
+
+func _free_assault_fixture(f: Dictionary) -> void:
+    f.tm.free()
+    f.activation.free()
+    f.shooting.free()
+    f.assault.free()
+
+
+## Advances `f` from Movement to the Assault phase with every squad passing.
+func _to_assault(f: Dictionary) -> void:
+    _complete_phase(f.activation, f.battle, f.tm)
+    _complete_phase(f.activation, f.battle, f.tm)
+
+
+func test_placeholder_melee_weapons() -> void:
+    var blade: WeaponProfile = load("res://data/weapons/combat_blade.tres")
+    var chain: WeaponProfile = load("res://data/weapons/chainblade.tres")
+    _check_eq([blade.weapon_name, blade.attacks, blade.strength, blade.armor_piercing], ["Combat Blade", 1, 3, 0], "Combat Blade")
+    _check_eq([chain.weapon_name, chain.attacks, chain.strength, chain.armor_piercing], ["Chainblade", 2, 4, 1], "Chainblade")
+    var line: SquadData = load("res://data/squads/p1_line_squad.tres")
+    _check_eq(line.models.map(func(m): return m.melee_weapon), [chain, blade, blade, null],
+        "Sergeant: Chainblade, Troopers: Combat Blade, Gunner: none")
+    _check_eq(line.models[1].weapon.weapon_name, "Rifle", "ranged weapons unchanged")
+    var raiders: SquadData = load("res://data/squads/p2_raider_squad.tres")
+    _check_eq(raiders.models.map(func(m): return m.melee_weapon), [chain, blade, blade],
+        "Raider Boss: Chainblade, Raiders: Combat Blade")
+    var state := SquadState.new(line, Vector2(12.0, 16.0))
+    _check_eq(state.get_model(0).get_melee_weapon(), chain, "ModelState exposes the melee weapon")
+
+
+func test_engagement_distance_boundaries() -> void:
+    _check(AssaultRules.is_engaged(1.99), "within 2.0 engaged")
+    _check(AssaultRules.is_engaged(2.0), "exactly 2.0 engaged")
+    _check(not AssaultRules.is_engaged(2.01), "beyond 2.0 not engaged")
+    var blade := _make_melee(1)
+    var at_two: Array[Vector2] = [Vector2(12.0, 10.0)]
+    _check_eq(AssaultRules.evaluate_model("A", blade, Vector2(10.0, 10.0), at_two).eligibility,
+        CombatResult.Eligibility.ELIGIBLE, "model exactly 2.0 away may attack")
+    var beyond: Array[Vector2] = [Vector2(12.01, 10.0)]
+    var r := AssaultRules.evaluate_model("B", blade, Vector2(10.0, 10.0), beyond)
+    _check_eq(r.eligibility, CombatResult.Eligibility.NOT_ENGAGED, "model 2.01 away is not engaged")
+    _check(is_equal_approx(r.distance, 2.01), "distance to the nearest target model reported")
+    var diagonal: Array[Vector2] = [Vector2(11.4, 11.4)]
+    _check_eq(AssaultRules.evaluate_model("C", blade, Vector2(10.0, 10.0), diagonal).eligibility,
+        CombatResult.Eligibility.ELIGIBLE, "continuous distance: 1.98 on the diagonal")
+
+
+func test_engagement_uses_model_positions_not_anchors() -> void:
+    var blade := _make_melee(1)
+    # Anchors 4 apart: only the attacker's forward model is engaged.
+    var attacker := _make_shooter(&"a", P1, Vector2(10.0, 10.0),
+        [["Leader", null, Vector2.ZERO, blade], ["Forward", null, Vector2(2.5, 0.0), blade]])
+    var target := _make_shooter(&"t", P2, Vector2(14.0, 10.0), [["T", null, Vector2.ZERO]])
+    var result := AssaultRules.resolve(attacker, target, ScriptedDice.new([6]))
+    _check_eq(result.model_results[0].eligibility, CombatResult.Eligibility.NOT_ENGAGED, "leader 4 away is not engaged")
+    _check_eq(result.model_results[1].eligibility, CombatResult.Eligibility.ELIGIBLE, "forward model 1.5 away is engaged")
+    # Anchors 1 apart: a model standing back from the anchor is not engaged.
+    var close := _make_shooter(&"c", P1, Vector2(13.0, 10.0),
+        [["Leader", null, Vector2.ZERO, blade], ["Rear", null, Vector2(-5.0, 0.0), blade]])
+    result = AssaultRules.resolve(close, target, ScriptedDice.new([6]))
+    _check_eq(result.model_results[0].eligibility, CombatResult.Eligibility.ELIGIBLE, "leader 1 away is engaged")
+    _check_eq(result.model_results[1].eligibility, CombatResult.Eligibility.NOT_ENGAGED, "rear model 6 away is not")
+    # Target models, not the target anchor: an offset target model brings the attacker into range.
+    var spread := _make_shooter(&"s", P2, Vector2(20.0, 10.0),
+        [["Back", null, Vector2.ZERO], ["Front", null, Vector2(-7.0, 0.0)]])
+    result = AssaultRules.resolve(attacker, spread, ScriptedDice.new([6]))
+    _check_eq(result.model_results[1].eligibility, CombatResult.Eligibility.ELIGIBLE,
+        "engaged with the target's forward model 0.5 away, though its anchor is 7.5 away")
+
+
+func test_removed_models_neither_attack_nor_engage() -> void:
+    var blade := _make_melee(1)
+    var attacker := _make_shooter(&"a", P1, Vector2(10.0, 10.0),
+        [["Leader", null, Vector2.ZERO, blade], ["Fallen", null, Vector2(2.0, 0.0), blade]])
+    var target := _make_shooter(&"t", P2, Vector2(15.0, 10.0),
+        [["Back", null, Vector2.ZERO], ["Front", null, Vector2(-3.0, 0.0)]])
+    var result := AssaultRules.resolve(attacker, target, ScriptedDice.new([6, 6]))
+    _check_eq(result.get_eligible_count(), 2, "both attackers engaged with the target's front model")
+    attacker.take_wound(1)
+    result = AssaultRules.resolve(attacker, target, ScriptedDice.new([6]))
+    _check_eq(result.model_results.size(), 1, "removed attacker contributes no result")
+    _check_eq(result.model_results[0].model_name, "Leader", "only the living leader is evaluated")
+    target.take_wound(1)
+    result = AssaultRules.resolve(attacker, target, ScriptedDice.new([]))
+    _check_eq(result.model_results[0].eligibility, CombatResult.Eligibility.NOT_ENGAGED,
+        "removed target model no longer engages the attacker")
+
+
+func test_models_without_melee_weapons_or_out_of_reach() -> void:
+    var attacker := _make_shooter(&"a", P1, Vector2(10.0, 10.0), [
+        ["Unarmed", _make_weapon(24.0, 1), Vector2.ZERO],
+        ["Zero", null, Vector2(0.0, 1.0), _make_melee(0)],
+        ["Far", null, Vector2(-3.0, 0.0), _make_melee(1)],
+        ["Fighter", null, Vector2(0.0, -1.0), _make_melee(1)],
+    ])
+    var target := _make_shooter(&"t", P2, Vector2(11.5, 10.0), [["T", null, Vector2.ZERO]])
+    var result := AssaultRules.resolve(attacker, target, ScriptedDice.new([5]))
+    _check_eq(result.model_results.map(func(r): return r.eligibility), [
+        CombatResult.Eligibility.NO_MELEE_WEAPON, CombatResult.Eligibility.NO_MELEE_WEAPON,
+        CombatResult.Eligibility.NOT_ENGAGED, CombatResult.Eligibility.ELIGIBLE],
+        "ranged-only and 0-attack models have no melee weapon; the far model is not engaged")
+    _check_eq(result.get_eligible_count(), 1, "the ineligible models do not stop the fighter")
+    _check_eq(result.get_total_attacks(), 1, "only the fighter attacks")
+    _check_eq(result.attack_type, CombatResult.AttackType.MELEE, "result marked as melee")
+
+
+func test_multiple_attackers_and_attacks() -> void:
+    var attacker := _make_shooter(&"a", P1, Vector2(10.0, 10.0), [
+        ["Two", null, Vector2.ZERO, _make_melee(2)],
+        ["Three", null, Vector2(0.0, 1.0), _make_melee(3)],
+        ["One", null, Vector2(0.0, -1.0), _make_melee(1)],
+    ], 4)
+    var target := _make_shooter(&"t", P2, Vector2(11.0, 10.0), [["T", null, Vector2.ZERO]])
+    var result := AssaultRules.resolve(attacker, target, ScriptedDice.new([4, 3, 6, 1, 5, 2]))
+    _check_eq(result.get_eligible_count(), 3, "three engaged attackers")
+    _check_eq(result.model_results.map(func(r): return r.rolls), [[4, 3], [6, 1, 5], [2]],
+        "each model rolls its weapon's attacks independently")
+    _check_eq(result.model_results.map(func(r): return r.hits), [1, 2, 0], "hits per model on Quality 4")
+    _check_eq([result.get_total_attacks(), result.get_hits(), result.get_misses()], [6, 3, 3], "totals")
+
+
+func test_melee_hits_use_existing_quality_rule() -> void:
+    var target := _make_shooter(&"t", P2, Vector2(11.0, 10.0), [["T", null, Vector2.ZERO]])
+    var q4 := _make_shooter(&"q4", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, _make_melee(4)]], 4)
+    var result := AssaultRules.resolve(q4, target, ScriptedDice.new([4, 3, 6, 1]))
+    _check_eq(result.model_results[0].hits, 2, "4 and 6 hit Quality 4; 3 and 1 miss")
+    var q1 := _make_shooter(&"q1", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, _make_melee(1)]], 1)
+    result = AssaultRules.resolve(q1, target, ScriptedDice.new([1]))
+    _check_eq(result.model_results[0].hits, 1, "established rule kept: no automatic natural-1 miss on hits")
+
+
+func test_melee_wounds_across_strength_toughness() -> void:
+    var attacker := _make_shooter(&"a", P1, Vector2(10.0, 10.0), [
+        ["S6", null, Vector2.ZERO, _make_melee(1, 6)],
+        ["S4", null, Vector2(0.0, 0.5), _make_melee(1, 4)],
+        ["S3", null, Vector2(0.0, -0.5), _make_melee(1, 3)],
+        ["S2", null, Vector2(0.0, 1.0), _make_melee(1, 2)],
+        ["S1", null, Vector2(0.0, -1.0), _make_melee(1, 1)],
+    ])
+    var target := _make_shooter(&"t", P2, Vector2(11.0, 10.0), [["T", null, Vector2.ZERO]])
+    target.data.profile.toughness = 3
+    var dice := ScriptedDice.new([6, 6, 6, 6, 6, 2, 3, 3, 5, 1])
+    var result := AssaultRules.resolve(attacker, target, dice)
+    DamageRules.resolve_wounds_and_saves(result, dice)
+    _check_eq(result.model_results.map(func(r): return r.wound_target), [2, 3, 4, 5, 6],
+        "S6, S4, S3, S2, S1 against T3: 2+, 3+, 4+, 5+, 6+")
+    _check_eq(result.model_results.map(func(r): return r.wounds), [1, 1, 0, 1, 0],
+        "rolls 2, 3, 3, 5, 1: wound, wound, fail, wound, natural 1 fails")
+    _check(dice.rolls.is_empty(), "every scripted roll used")
+
+
+func test_melee_saves_and_ap() -> void:
+    var attacker := _make_shooter(&"a", P1, Vector2(10.0, 10.0), [["Chain", null, Vector2.ZERO, _make_melee(2, 4, 1)]])
+    var target := _make_shooter(&"t", P2, Vector2(11.0, 10.0), [["T", null, Vector2.ZERO]])
+    target.data.profile.toughness = 4
+    target.data.profile.armor_save = 4
+    var dice := ScriptedDice.new([6, 6, 4, 4, 5, 4])
+    var result := AssaultRules.resolve(attacker, target, dice)
+    DamageRules.resolve_wounds_and_saves(result, dice)
+    var model := result.model_results[0]
+    _check_eq(model.save_target, 5, "4+ save against AP1 is 5+")
+    _check_eq(model.save_rolls, [5, 4], "one save roll per wound")
+    _check_eq([model.saves, result.get_unsaved_wounds()], [1, 1], "5 saves, 4 fails")
+
+
+func test_assault_allocation_and_activation_completion() -> void:
+    var blade := _make_melee(1)
+    var attacker := _make_shooter(&"p1_a", P1, Vector2(10.0, 10.0),
+        [["A", null, Vector2.ZERO, blade], ["B", null, Vector2(0.0, 1.0), blade]])
+    var target := _make_shooter(&"p2_t", P2, Vector2(11.5, 10.0),
+        [["X", null, Vector2.ZERO], ["Y", null, Vector2(0.0, 1.0)], ["Z", null, Vector2(0.0, -1.0)]])
+    var f := _assault_fixture([attacker, target])
+    var assault: AssaultController = f.assault
+    var allocator: CasualtyAllocator = f.allocator
+    var activation: ActivationController = f.activation
+    _to_assault(f)
+    _check_eq(f.tm.current_phase, Phase.ASSAULT, "Assault phase")
+    assault.dice = ScriptedDice.new([6, 6, 6, 6])
+    var prompts := []
+    allocator.allocation_required.connect(func(_r, left): prompts.append(left))
+    var resolved := []
+    assault.assault_resolved.connect(func(r): resolved.append(r))
+    activation.activate(attacker)
+    _check_eq(assault.order_assault(attacker, target), AssaultRules.OrderResult.OK, "assault accepted")
+    _check_eq(prompts, [2], "two unsaved wounds for the defender")
+    _check(activation.locked and activation.is_active_squad(attacker), "attacker's activation held open")
+    _check(not activation.end_activation(), "cannot end the activation mid-allocation")
+    _check_eq(assault.order_assault(attacker, target), AssaultRules.OrderResult.ALLOCATION_PENDING, "no second assault")
+    _check_eq(f.shooting.order_shot(attacker, target), ShootingRules.OrderResult.ALLOCATION_PENDING,
+        "shared allocator also blocks shooting")
+    _check_eq(allocator.allocate_wound(2), DamageRules.AllocationResult.OK, "defender picks Z")
+    _check_eq(allocator.allocate_wound(2), DamageRules.AllocationResult.MODEL_REMOVED, "Z already removed")
+    _check_eq(allocator.allocate_wound(1), DamageRules.AllocationResult.OK, "defender picks Y")
+    _check_eq(resolved.size(), 1, "assault result reported once")
+    _check_eq(resolved[0].get_casualties(), PackedStringArray(["Z", "Y"]), "casualties as allocated")
+    _check_eq(resolved[0].models_remaining, 1, "one model left")
+    _check(not activation.locked, "unlocked")
+    _check(activation.has_activated(attacker), "attacker's activation spent")
+    _check_eq(activation.get_active_player(), P2, "control passes to Player 2")
+    _check_eq(assault.order_assault(attacker, target), AssaultRules.OrderResult.NOT_ACTIVATED, "cannot assault twice")
+    _check_eq(activation.activate(attacker), ActivationController.Result.ALREADY_ACTIVATED, "cannot reactivate")
+    _free_assault_fixture(f)
+
+
+func test_melee_casualties_and_leader_succession() -> void:
+    var attacker := _make_shooter(&"p1_a", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, _make_melee(1)]])
+    var target := _make_shooter(&"p2_t", P2, Vector2(11.5, 10.0),
+        [["Leader", null, Vector2.ZERO], ["Second", null, Vector2(1.0, 1.0)]])
+    var f := _assault_fixture([attacker, target])
+    _to_assault(f)
+    f.assault.dice = ScriptedDice.new([6, 6])
+    var second_world := target.get_model_position(target.get_model(1))
+    f.activation.activate(attacker)
+    f.assault.order_assault(attacker, target)
+    f.allocator.allocate_wound(0)
+    _check(target.get_model(0).removed, "leader killed in melee")
+    _check_eq(target.get_leader(), target.get_model(1), "next model promoted")
+    _check_eq(target.board_position, second_world, "anchor moved to the new leader")
+    _check_eq(target.get_model_position(target.get_model(1)), second_world, "new leader has not moved")
+    _check(target.lost_models_since_morale, "loss recorded for Morale")
+    _free_assault_fixture(f)
+
+
+func test_melee_destruction_discards_excess_wounds() -> void:
+    var attacker := _make_shooter(&"p1_a", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, _make_melee(3)]])
+    var spare := _make_shooter(&"p1_spare", P1, Vector2(40.0, 30.0), [["S", null, Vector2.ZERO]])
+    var target := _make_shooter(&"p2_t", P2, Vector2(11.5, 10.0), [["X", null, Vector2.ZERO]])
+    var other := _make_shooter(&"p2_o", P2, Vector2(40.0, 5.0), [["O", null, Vector2.ZERO]])
+    var f := _assault_fixture([attacker, spare, target, other])
+    _to_assault(f)
+    f.assault.dice = ScriptedDice.new([6, 6, 6, 6, 6, 6])
+    var resolved := []
+    f.assault.assault_resolved.connect(func(r): resolved.append(r))
+    var removed := []
+    f.battle.squad_removed.connect(func(s): removed.append(s.squad_id))
+    f.activation.activate(attacker)
+    f.assault.order_assault(attacker, target)
+    _check_eq(f.allocator.get_wounds_left(), 3, "three unsaved wounds against one model")
+    f.allocator.allocate_wound(0)
+    _check(not f.allocator.is_pending(), "allocation over when the last model falls")
+    _check_eq(resolved[0].wasted_wounds, 2, "two excess wounds discarded")
+    _check(resolved[0].target_destroyed, "target destroyed")
+    _check_eq(removed, [&"p2_t"], "removed through BattleState")
+    _check(f.activation.has_activated(attacker), "attacker's activation completed")
+    _check_eq(f.activation.get_active_player(), P2, "Player 2 continues with its other squad")
+    _check_eq(f.tm.get_remaining_activations(P2), 1, "only the destroyed squad's activation removed")
+    _free_assault_fixture(f)
+
+
+func test_assault_without_engaged_models_spends_activation() -> void:
+    var attacker := _make_shooter(&"p1_a", P1, Vector2(5.0, 5.0), [["A", null, Vector2.ZERO, _make_melee(2)]])
+    var target := _make_shooter(&"p2_t", P2, Vector2(40.0, 25.0), [["T", null, Vector2.ZERO]])
+    var f := _assault_fixture([attacker, target])
+    _to_assault(f)
+    f.assault.dice = ScriptedDice.new([])
+    var resolved := []
+    f.assault.assault_resolved.connect(func(r): resolved.append(r))
+    f.activation.activate(attacker)
+    _check_eq(f.assault.order_assault(attacker, target), AssaultRules.OrderResult.OK, "attempt accepted")
+    _check_eq([resolved[0].get_eligible_count(), resolved[0].get_total_attacks()], [0, 0], "zero attacks")
+    _check_eq(resolved[0].model_results[0].eligibility, CombatResult.Eligibility.NOT_ENGAGED, "reason reported")
+    _check(f.activation.has_activated(attacker), "activation spent anyway")
+    _check_eq(f.activation.get_active_player(), P2, "control passes")
+    _free_assault_fixture(f)
+
+
+func test_assault_order_restrictions() -> void:
+    var blade := _make_melee(1)
+    var p1 := _make_shooter(&"p1_a", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, blade]])
+    var ally := _make_shooter(&"p1_b", P1, Vector2(11.0, 10.0), [["B", null, Vector2.ZERO, blade]])
+    var p2 := _make_shooter(&"p2_a", P2, Vector2(10.0, 11.0), [["C", null, Vector2.ZERO, blade]])
+    var p2b := _make_shooter(&"p2_b", P2, Vector2(30.0, 20.0), [["D", null, Vector2.ZERO, blade]])
+    var f := _assault_fixture([p1, ally, p2, p2b])
+    var assault: AssaultController = f.assault
+    var activation: ActivationController = f.activation
+    activation.activate(p1)
+    _check_eq(assault.order_assault(p1, p2), AssaultRules.OrderResult.WRONG_PHASE, "refused in Movement")
+    activation.end_activation()
+    _complete_phase(activation, f.battle, f.tm)
+    activation.activate(p1)
+    _check_eq(assault.order_assault(p1, p2), AssaultRules.OrderResult.WRONG_PHASE, "refused in Shooting")
+    _check(activation.is_active_squad(p1), "refused order does not spend the activation")
+    activation.end_activation()
+    _complete_phase(activation, f.battle, f.tm)
+    _check_eq(f.tm.current_phase, Phase.ASSAULT, "Assault phase")
+    _check_eq(AssaultRules.validate_order(p1, p2, Phase.MORALE, true), AssaultRules.OrderResult.WRONG_PHASE,
+        "refused in Morale")
+    _check_eq(activation.get_active_player(), P1, "Player 1 to activate")
+    _check_eq(activation.activate(p2), ActivationController.Result.WRONG_PLAYER, "cannot activate the opponent's squad")
+    _check_eq(assault.order_assault(p2, p1), AssaultRules.OrderResult.NOT_ACTIVATED, "cannot assault with it")
+    _check_eq(assault.order_assault(null, p2), AssaultRules.OrderResult.NO_SQUAD, "no squad activated")
+    activation.activate(p1)
+    _check_eq(assault.order_assault(p1, p1), AssaultRules.OrderResult.OWN_SQUAD, "cannot assault itself")
+    _check_eq(assault.order_assault(p1, ally), AssaultRules.OrderResult.OWN_SQUAD, "cannot assault an allied squad")
+    _check_eq(assault.order_assault(p1, null), AssaultRules.OrderResult.NO_TARGET, "needs a target")
+    _check(activation.is_active_squad(p1), "refusals leave the activation open")
+    assault.dice = ScriptedDice.new([1])
+    _check_eq(assault.order_assault(p1, p2), AssaultRules.OrderResult.OK, "valid assault")
+    _check_eq(assault.order_assault(p1, p2), AssaultRules.OrderResult.NOT_ACTIVATED, "no second assault this phase")
+    _free_assault_fixture(f)
+
+
+func test_shared_allocator_reports_by_attack_type() -> void:
+    var main: Node = await _load_main()
+    var shooting: ShootingController = main.get_node("ShootingController")
+    var assault: AssaultController = main.get_node("AssaultController")
+    _check(shooting.allocator == main.casualties and assault.allocator == main.casualties,
+        "Main shares one allocator between shooting and assault")
+    var shots := []
+    var assaults := []
+    shooting.shot_resolved.connect(func(r): shots.append(r.attack_type))
+    assault.assault_resolved.connect(func(r): assaults.append(r.attack_type))
+    var ranged := CombatResult.new()
+    ranged.attacker_squad = main.battle.get_squad(&"p1_line_squad")
+    ranged.target_squad = main.battle.get_squad(&"p2_raider_squad")
+    var melee := CombatResult.new()
+    melee.attack_type = CombatResult.AttackType.MELEE
+    melee.attacker_squad = ranged.attacker_squad
+    melee.target_squad = ranged.target_squad
+    var activation: ActivationController = main.get_node("ActivationController")
+    activation.activate(ranged.attacker_squad)
+    main.casualties.begin(ranged)
+    activation.activate(ranged.target_squad)
+    main.casualties.begin(melee)
+    _check_eq(shots, [CombatResult.AttackType.RANGED], "shot_resolved only for ranged results")
+    _check_eq(assaults, [CombatResult.AttackType.MELEE], "assault_resolved only for melee results")
+    main.queue_free()
+    await process_frame
+
+
+func test_hud_assault_report() -> void:
+    var attacker := _make_shooter(&"Attackers", P1, Vector2.ZERO, [])
+    var target := _make_shooter(&"Defenders", P2, Vector2.ZERO, [["T", null, Vector2.ZERO], ["U", null, Vector2.ZERO]])
+    var result := CombatResult.new()
+    result.attack_type = CombatResult.AttackType.MELEE
+    result.attacker_squad = attacker
+    result.target_squad = target
+    var fighter := CombatResult.ModelResult.new()
+    fighter.model_name = "Sergeant"
+    fighter.eligibility = CombatResult.Eligibility.ELIGIBLE
+    fighter.rolls = [6, 2]
+    fighter.hits = 1
+    fighter.wound_target = 3
+    fighter.wound_rolls = [5]
+    fighter.wounds = 1
+    fighter.save_target = 6
+    fighter.save_rolls = [6]
+    fighter.saves = 1
+    var unarmed := CombatResult.ModelResult.new()
+    unarmed.model_name = "Gunner"
+    unarmed.eligibility = CombatResult.Eligibility.NO_MELEE_WEAPON
+    var far := CombatResult.ModelResult.new()
+    far.model_name = "Trooper"
+    far.eligibility = CombatResult.Eligibility.NOT_ENGAGED
+    result.model_results = [fighter, unarmed, far]
+    result.models_remaining = 2
+    _check_eq(HUD.format_combat_result(result), "\n".join([
+        "Attackers assaulted Defenders",
+        "Fought: 1  Unable: 2",
+        "Attacks 2: 1 hit, 1 miss",
+        "Wounds 1: 1 saved, 0 unsaved",
+        "Sergeant: 1/2 hit, 1 wnd (3+), 1 saved (6+)",
+        "Gunner: no melee weapon",
+        "Trooper: not engaged",
+        "Casualties: none",
+        "Defenders: 2 models left",
+    ]), "assault report")
+
+
+func test_assault_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var layer: SquadLayer = main.get_node("GameBoard/Squads")
+    var activation: ActivationController = main.get_node("ActivationController")
+    var assault: AssaultController = main.get_node("AssaultController")
+    var panel: ActivationPanel = main.get_node("HUD/ActivationPanel")
+    var allocation: AllocationPanel = main.get_node("HUD/AllocationPanel")
+    var feedback: Label = main.get_node("HUD/OrderFeedback")
+    var tm: TurnManager = main.get_node("TurnManager")
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    # Close the Raiders in: Sergeant and right Trooper engaged; left Trooper too
+    # far; Gunner engaged but has no melee weapon.
+    raider.board_position = Vector2(13.5, 16.0)
+    _complete_phase(activation, main.battle, tm)
+    _complete_phase(activation, main.battle, tm)
+    _check_eq(tm.current_phase, Phase.ASSAULT, "Assault phase")
+    # Hits: Chainblade 6, 6; Combat Blade 6. Chainblade S4 vs T3 (3+): 6, 2;
+    # save 6+ (5+ with AP1): 3. Combat Blade S3 vs T3 (4+): 5; save 5+: 2.
+    assault.dice = ScriptedDice.new([6, 6, 6, 6, 2, 3, 5, 2])
+    _click(layer.get_token(&"p1_line_squad").global_position)
+    panel.action_button.pressed.emit()
+    _check(activation.is_active_squad(line), "Line Squad activated")
+    _check_eq(panel.hint_label.text, "Right-click an enemy squad to assault", "assault prompt")
+    _right_click(layer.get_token(&"p2_raider_squad").global_position)
+    _check(allocation.visible, "defender asked to allocate")
+    _check_eq(allocation.title_label.text, "Player 2: allocate 2 wounds to Raider Squad", "allocation prompt")
+    _check_eq(panel.hint_label.text, "Waiting for wound allocation", "attacker waits")
+    allocation.get_button(1).pressed.emit()
+    allocation.get_button(2).pressed.emit()
+    _check(not allocation.visible, "allocation finished")
+    _check_eq(raider.get_model_count(), 1, "two Raiders fell")
+    _check(feedback.text.begins_with("Line Squad assaulted Raider Squad"), "assault reported")
+    _check(feedback.text.contains("Fought: 2  Unable: 2"), "per-model eligibility")
+    _check(feedback.text.contains("Attacks 3: 3 hit, 0 miss"), "attacks and hits")
+    _check(feedback.text.contains("Wounds 2: 0 saved, 2 unsaved"), "wounds and saves")
+    _check(feedback.text.contains("Trooper: not engaged"), "out-of-reach Trooper explained")
+    _check(feedback.text.contains("Gunner: no melee weapon"), "Gunner explained")
+    _check(feedback.text.contains("Casualties: Raider, Raider"), "casualties")
+    _check(feedback.text.contains("Raider Squad: 1 models left"), "remaining models")
+    _check(activation.has_activated(line), "Line Squad's activation spent")
+    _check_eq(panel.player_label.text, "Player 2 to activate", "control passes")
+    main.queue_free()
+    await process_frame
 
 
 func test_unit_profile_resource() -> void:

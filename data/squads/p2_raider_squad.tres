@@ -1,8 +1,10 @@
-[gd_resource type="Resource" script_class="SquadData" load_steps=10 format=3]
+[gd_resource type="Resource" script_class="SquadData" load_steps=12 format=3]
 
 [ext_resource type="Script" path="res://scripts/resources/SquadData.gd" id="1_squad"]
 [ext_resource type="Script" path="res://scripts/resources/UnitProfile.gd" id="2_profile"]
 [ext_resource type="Script" path="res://scripts/resources/SquadModel.gd" id="3_model"]
+[ext_resource type="Resource" path="res://data/weapons/chainblade.tres" id="m_chainblade"]
+[ext_resource type="Resource" path="res://data/weapons/combat_blade.tres" id="m_combat_blade"]
 [ext_resource type="Resource" path="res://data/weapons/carbine.tres" id="w_carbine"]
 [ext_resource type="Resource" path="res://data/weapons/pistol.tres" id="w_pistol"]
 
@@ -19,18 +21,21 @@ armor_save = 5
 script = ExtResource("3_model")
 model_name = "Raider Boss"
 weapon = ExtResource("w_pistol")
+melee_weapon = ExtResource("m_chainblade")
 formation_offset = Vector2(0, 0)
 
 [sub_resource type="Resource" id="Resource_model_1"]
 script = ExtResource("3_model")
 model_name = "Raider"
 weapon = ExtResource("w_carbine")
+melee_weapon = ExtResource("m_combat_blade")
 formation_offset = Vector2(-1.5, -1.5)
 
 [sub_resource type="Resource" id="Resource_model_2"]
 script = ExtResource("3_model")
 model_name = "Raider"
 weapon = ExtResource("w_carbine")
+melee_weapon = ExtResource("m_combat_blade")
 formation_offset = Vector2(1.5, -1.5)
 
 [resource]

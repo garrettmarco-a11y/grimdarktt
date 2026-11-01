@@ -1,8 +1,10 @@
-[gd_resource type="Resource" script_class="SquadData" load_steps=12 format=3]
+[gd_resource type="Resource" script_class="SquadData" load_steps=14 format=3]
 
 [ext_resource type="Script" path="res://scripts/resources/SquadData.gd" id="1_squad"]
 [ext_resource type="Script" path="res://scripts/resources/UnitProfile.gd" id="2_profile"]
 [ext_resource type="Script" path="res://scripts/resources/SquadModel.gd" id="3_model"]
+[ext_resource type="Resource" path="res://data/weapons/chainblade.tres" id="m_chainblade"]
+[ext_resource type="Resource" path="res://data/weapons/combat_blade.tres" id="m_combat_blade"]
 [ext_resource type="Resource" path="res://data/weapons/heavy_gun.tres" id="w_heavy_gun"]
 [ext_resource type="Resource" path="res://data/weapons/pistol.tres" id="w_pistol"]
 [ext_resource type="Resource" path="res://data/weapons/rifle.tres" id="w_rifle"]
@@ -20,18 +22,21 @@ armor_save = 4
 script = ExtResource("3_model")
 model_name = "Sergeant"
 weapon = ExtResource("w_pistol")
+melee_weapon = ExtResource("m_chainblade")
 formation_offset = Vector2(0, 0)
 
 [sub_resource type="Resource" id="Resource_model_1"]
 script = ExtResource("3_model")
 model_name = "Trooper"
 weapon = ExtResource("w_rifle")
+melee_weapon = ExtResource("m_combat_blade")
 formation_offset = Vector2(-1.5, 1.5)
 
 [sub_resource type="Resource" id="Resource_model_2"]
 script = ExtResource("3_model")
 model_name = "Trooper"
 weapon = ExtResource("w_rifle")
+melee_weapon = ExtResource("m_combat_blade")
 formation_offset = Vector2(1.5, 1.5)
 
 [sub_resource type="Resource" id="Resource_model_3"]

@@ -14,7 +14,6 @@ class_name ShootingRules
 ##   - Each attack rolls one D6 and hits on a roll >= the firer's Quality.
 
 enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING }
-enum Eligibility { ELIGIBLE, NO_RANGED_WEAPON, OUT_OF_RANGE, NO_LINE_OF_SIGHT }
 
 ## Tolerance for range comparisons, in board units.
 const EPSILON := 0.001
@@ -56,23 +55,23 @@ static func target_points(target: SquadState) -> Array[Vector2]:
 ## Checks whether a model with `weapon` at `position` can fire at `targets`.
 ## Fills the result's eligibility and nearest-target distance; rolls nothing.
 static func evaluate_model(model_name: String, weapon: WeaponProfile, position: Vector2,
-        targets: Array[Vector2], los: LineOfSight) -> ShootingResult.ModelResult:
-    var result := ShootingResult.ModelResult.new()
+        targets: Array[Vector2], los: LineOfSight) -> CombatResult.ModelResult:
+    var result := CombatResult.ModelResult.new()
     result.model_name = model_name
     result.weapon = weapon
     for point in targets:
         result.distance = minf(result.distance, position.distance_to(point))
     if not is_ranged_weapon(weapon):
-        result.eligibility = Eligibility.NO_RANGED_WEAPON
+        result.eligibility = CombatResult.Eligibility.NO_RANGED_WEAPON
         return result
     var any_in_range := false
     for point in targets:
         if in_range(weapon, position.distance_to(point)):
             any_in_range = true
             if los.has_line_of_sight(position, point):
-                result.eligibility = Eligibility.ELIGIBLE
+                result.eligibility = CombatResult.Eligibility.ELIGIBLE
                 return result
-    result.eligibility = Eligibility.NO_LINE_OF_SIGHT if any_in_range else Eligibility.OUT_OF_RANGE
+    result.eligibility = CombatResult.Eligibility.NO_LINE_OF_SIGHT if any_in_range else CombatResult.Eligibility.OUT_OF_RANGE
     return result
 
 
@@ -91,9 +90,9 @@ static func is_hit(roll: int, quality: int) -> bool:
 ## Resolves hits from every living model in `firing` at `target`. Wounds and
 ## saves are rolled separately by DamageRules.
 static func resolve(firing: SquadState, target: SquadState, los: LineOfSight,
-        dice: DiceRoller) -> ShootingResult:
-    var result := ShootingResult.new()
-    result.firing_squad = firing
+        dice: DiceRoller) -> CombatResult:
+    var result := CombatResult.new()
+    result.attacker_squad = firing
     result.target_squad = target
     var targets := target_points(target)
     var quality := firing.data.profile.quality if firing.data.profile else 0

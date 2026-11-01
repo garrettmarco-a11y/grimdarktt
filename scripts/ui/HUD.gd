@@ -1,7 +1,8 @@
 extends CanvasLayer
 class_name HUD
 ## Displays game state. Reads from the turn manager, selection, activation,
-## movement and shooting controllers through signals only.
+## movement, shooting and assault controllers and the casualty allocator
+## through signals only.
 
 @onready var phase_banner: PhaseBanner = $PhaseBanner
 @onready var squad_info_panel: SquadInfoPanel = $SquadInfoPanel
@@ -28,10 +29,18 @@ func bind_movement(movement: MovementController) -> void:
 
 
 func bind_shooting(shooting: ShootingController) -> void:
-    shooting.shot_resolved.connect(_on_shot_resolved)
     shooting.shot_rejected.connect(_on_shot_rejected)
-    shooting.allocation_required.connect(_on_allocation_required)
-    allocation_panel.bind(shooting)
+
+
+func bind_assault(assault: AssaultController) -> void:
+    assault.assault_rejected.connect(_on_assault_rejected)
+
+
+## Results from shooting and assault both arrive through the shared allocator.
+func bind_casualties(allocator: CasualtyAllocator) -> void:
+    allocator.allocation_required.connect(_on_allocation_required)
+    allocator.resolved.connect(_on_attack_resolved)
+    allocation_panel.bind(allocator)
 
 
 func _on_move_ordered(state: SquadState, _from: Vector2, _to: Vector2) -> void:
@@ -58,9 +67,9 @@ func _on_move_rejected(state: SquadState, destination: Vector2, result: Movement
                 String.num(state.movement_allowance)]
 
 
-func _on_shot_resolved(result: ShootingResult) -> void:
+func _on_attack_resolved(result: CombatResult) -> void:
     order_feedback.modulate = Color.WHITE
-    order_feedback.text = format_shooting_result(result)
+    order_feedback.text = format_combat_result(result)
 
 
 func _on_shot_rejected(_firing: SquadState, _target: SquadState, result: ShootingRules.OrderResult) -> void:
@@ -80,19 +89,39 @@ func _on_shot_rejected(_firing: SquadState, _target: SquadState, result: Shootin
             order_feedback.text = "Allocate the pending wounds first"
 
 
-func _on_allocation_required(result: ShootingResult, _wounds_left: int) -> void:
+func _on_assault_rejected(_attacker: SquadState, _target: SquadState, result: AssaultRules.OrderResult) -> void:
+    order_feedback.modulate = Color(1.0, 0.45, 0.4)
+    match result:
+        AssaultRules.OrderResult.NO_SQUAD:
+            order_feedback.text = "Activate a squad to assault"
+        AssaultRules.OrderResult.NO_TARGET:
+            order_feedback.text = "Choose a target squad"
+        AssaultRules.OrderResult.WRONG_PHASE:
+            order_feedback.text = "Assaults only in the Assault phase"
+        AssaultRules.OrderResult.NOT_ACTIVATED:
+            order_feedback.text = "Activate the squad before assaulting"
+        AssaultRules.OrderResult.OWN_SQUAD:
+            order_feedback.text = "Cannot assault your own squad"
+        AssaultRules.OrderResult.ALLOCATION_PENDING:
+            order_feedback.text = "Allocate the pending wounds first"
+
+
+func _on_allocation_required(result: CombatResult, _wounds_left: int) -> void:
     order_feedback.modulate = Color.WHITE
-    order_feedback.text = format_shooting_result(result)
+    order_feedback.text = format_combat_result(result)
 
 
-static func format_shooting_result(result: ShootingResult) -> String:
+static func format_combat_result(result: CombatResult) -> String:
     var lines := PackedStringArray()
-    lines.append("%s shot %s" % [result.firing_squad.data.display_name, result.target_squad.data.display_name])
-    lines.append("Fired: %d  Unable: %d" % [result.get_eligible_count(), result.get_ineligible_count()])
+    var melee := result.attack_type == CombatResult.AttackType.MELEE
+    lines.append("%s %s %s" % [result.attacker_squad.data.display_name, "assaulted" if melee else "shot",
+        result.target_squad.data.display_name])
+    lines.append("%s: %d  Unable: %d" % ["Fought" if melee else "Fired", result.get_eligible_count(),
+        result.get_ineligible_count()])
     lines.append("Attacks %d: %d hit, %d miss" % [result.get_total_attacks(), result.get_hits(), result.get_misses()])
     lines.append("Wounds %d: %d saved, %d unsaved" % [result.get_wounds(), result.get_saves(), result.get_unsaved_wounds()])
     if result.get_eligible_count() == 0:
-        lines.append("No model could fire")
+        lines.append("No model could %s" % ("fight" if melee else "fire"))
     for model in result.model_results:
         if not model.is_eligible():
             lines.append("%s: %s" % [model.model_name, eligibility_text(model.eligibility)])
@@ -123,10 +152,14 @@ static func save_text(target: int) -> String:
 
 static func eligibility_text(eligibility: int) -> String:
     match eligibility:
-        ShootingRules.Eligibility.NO_RANGED_WEAPON:
+        CombatResult.Eligibility.NO_RANGED_WEAPON:
             return "no ranged weapon"
-        ShootingRules.Eligibility.OUT_OF_RANGE:
+        CombatResult.Eligibility.OUT_OF_RANGE:
             return "out of range"
-        ShootingRules.Eligibility.NO_LINE_OF_SIGHT:
+        CombatResult.Eligibility.NO_LINE_OF_SIGHT:
             return "no line of sight"
+        CombatResult.Eligibility.NO_MELEE_WEAPON:
+            return "no melee weapon"
+        CombatResult.Eligibility.NOT_ENGAGED:
+            return "not engaged"
     return "can fire"

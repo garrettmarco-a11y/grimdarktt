@@ -2,12 +2,14 @@ extends Node
 class_name Main
 ## Application coordinator: builds the battle state from the starting squad
 ## setups, wires the turn manager, activation, squad view, selection, movement,
-## shooting and HUD together, and starts the game.
+## shooting, assault and HUD together, and starts the game.
 
 ## Squads placed on the battlefield at the start of the game.
 @export var squad_setups: Array[SquadSetup] = []
 
 var battle := BattleState.new()
+## Shared by shooting and assault for the defender's casualty allocation.
+var casualties := CasualtyAllocator.new()
 
 @onready var game_board: GameBoard = $GameBoard
 @onready var movement_overlay: MovementOverlay = $GameBoard/MovementOverlay
@@ -17,6 +19,7 @@ var battle := BattleState.new()
 @onready var movement: MovementController = $MovementController
 @onready var activation: ActivationController = $ActivationController
 @onready var shooting: ShootingController = $ShootingController
+@onready var assault: AssaultController = $AssaultController
 @onready var hud: HUD = $HUD
 
 
@@ -28,12 +31,16 @@ func _ready() -> void:
     activation.bind(battle, turn_manager)
     movement.bind(battle, turn_manager, game_board.board_size)
     movement.activation = activation
-    shooting.bind(turn_manager, activation, battle)
+    casualties.bind(activation, battle)
+    shooting.bind(turn_manager, activation, battle, casualties)
+    assault.bind(turn_manager, activation, battle, casualties)
     hud.bind_turn_manager(turn_manager)
     hud.bind_selection(selection)
     hud.bind_movement(movement)
     hud.bind_activation(activation, selection)
     hud.bind_shooting(shooting)
+    hud.bind_casualties(casualties)
+    hud.bind_assault(assault)
     squad_layer.squad_clicked.connect(selection.select)
     squad_layer.empty_space_clicked.connect(selection.clear_selection)
     squad_layer.destination_clicked.connect(_on_destination_clicked)
@@ -50,13 +57,16 @@ func _on_destination_clicked(board_point: Vector2) -> void:
     movement.order_move(selection.selected_squad, board_point)
 
 
-## A right-click on a squad targets it in the Shooting phase; otherwise it is a
-## move destination, as before.
+## A right-click on a squad targets it in the Shooting and Assault phases;
+## otherwise it is a move destination, as before.
 func _on_squad_right_clicked(target: SquadState, board_point: Vector2) -> void:
-    if turn_manager.current_phase == TurnManager.Phase.SHOOTING:
-        shooting.order_shot(activation.active_squad, target)
-    else:
-        _on_destination_clicked(board_point)
+    match turn_manager.current_phase:
+        TurnManager.Phase.SHOOTING:
+            shooting.order_shot(activation.active_squad, target)
+        TurnManager.Phase.ASSAULT:
+            assault.order_assault(activation.active_squad, target)
+        _:
+            _on_destination_clicked(board_point)
 
 
 func _on_move_rejected(_state: SquadState, destination: Vector2, _result: MovementRules.Result) -> void:
