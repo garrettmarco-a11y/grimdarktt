@@ -11,6 +11,8 @@ signal move_rejected(state: SquadState, destination: Vector2, result: MovementRu
 var board_size := Vector2.ZERO
 ## When set, only the currently activated squad may be ordered to move.
 var activation: ActivationController
+## Battlefield terrain for difficult and impassable movement; none if null.
+var terrain: TerrainMap
 
 var _battle: BattleState
 var _turn_manager: TurnManager
@@ -30,14 +32,20 @@ func bind(battle: BattleState, turn_manager: TurnManager, board_units: Vector2) 
 ## only an OK order changes the squad's state.
 func order_move(state: SquadState, destination: Vector2) -> MovementRules.Result:
     var activated := activation == null or activation.is_active_squad(state)
-    var result := MovementRules.validate(state, destination, _turn_manager.current_phase, board_size, activated)
+    var result := MovementRules.validate(state, destination, _turn_manager.current_phase, board_size, activated, terrain)
     if result != MovementRules.Result.OK:
         move_rejected.emit(state, destination, result)
         return result
     var from := state.board_position
-    state.apply_move(destination, MovementRules.exhausts_allowance(state, destination))
+    var cost := MovementRules.movement_cost(state, destination, terrain)
+    state.apply_move(destination, cost >= state.movement_allowance - MovementRules.EPSILON, cost)
     move_ordered.emit(state, from, destination)
     return result
+
+
+## Allowance a move of `state` to `destination` would use, for feedback.
+func order_cost(state: SquadState, destination: Vector2) -> float:
+    return MovementRules.movement_cost(state, destination, terrain)
 
 
 func _on_turn_started(_turn: int) -> void:

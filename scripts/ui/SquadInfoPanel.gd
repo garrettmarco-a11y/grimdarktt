@@ -20,6 +20,10 @@ const EMPTY_TEXT := "No unit selected"
 @onready var save_value: Label = %SaveValue
 @onready var models_label: Label = %ModelsLabel
 @onready var status_label: Label = %StatusLabel
+@onready var cover_label: Label = %CoverLabel
+
+## Battlefield terrain, for the cover line; none if null.
+var terrain: TerrainMap
 @onready var movement_label: Label = %MovementLabel
 
 var _shown: SquadState
@@ -44,6 +48,7 @@ func show_squad(state: SquadState) -> void:
         movement_label.visible = false
         models_label.visible = false
         status_label.visible = false
+        cover_label.visible = false
         return
     _shown = state
     state.movement_changed.connect(_update_movement)
@@ -53,6 +58,7 @@ func show_squad(state: SquadState) -> void:
     _update_movement(state)
     _update_models(state)
     _update_status(state)
+    _update_cover(state)
     var profile := squad.profile
     name_label.text = squad.display_name
     player_label.text = "Player %d" % squad.player
@@ -66,15 +72,26 @@ func show_squad(state: SquadState) -> void:
     stats_grid.visible = true
 
 
+## Squad-wide cover and majority armour save, recalculated from current
+## positions whenever the squad moves or loses models.
+func _update_cover(state: SquadState) -> void:
+    var save := TerrainRules.majority_armor_save(state)
+    cover_label.text = "Cover: %s, Sv %s" % [TerrainPiece.cover_name(TerrainRules.squad_cover(state, terrain)),
+        "%d+" % save if save > 0 else "-"]
+    cover_label.visible = true
+
+
 func _update_movement(state: SquadState) -> void:
     if state.movement_complete:
-        movement_label.text = "Moved %.1f / %s (done)" % [state.distance_moved, String.num(state.movement_allowance)]
+        movement_label.text = "Moved %.1f / %s (done)" % [state.movement_used, String.num(state.movement_allowance)]
     else:
-        movement_label.text = "Moved %.1f / %s" % [state.distance_moved, String.num(state.movement_allowance)]
+        movement_label.text = "Moved %.1f / %s" % [state.movement_used, String.num(state.movement_allowance)]
     movement_label.visible = true
+    _update_cover(state)
 
 
 func _update_models(state: SquadState) -> void:
+    _update_cover(state)
     var wounds_left := 0
     for model in state.get_living_models():
         wounds_left += model.wounds_remaining

@@ -12,6 +12,8 @@ signal allocation_required(result: CombatResult, wounds_left: int)
 
 var line_of_sight := LineOfSight.new()
 var dice := DiceRoller.new()
+## Battlefield terrain for cover; use set_terrain() so line of sight follows it.
+var terrain: TerrainMap
 ## Shared with the AssaultController; created here if none is supplied.
 var allocator: CasualtyAllocator
 
@@ -31,6 +33,12 @@ func bind(turn_manager: TurnManager, activation: ActivationController, battle: B
     allocator.resolved.connect(_on_resolved)
 
 
+## Uses `terrain_map` for line of sight and cover.
+func set_terrain(terrain_map: TerrainMap) -> void:
+    terrain = terrain_map
+    line_of_sight = LineOfSight.new(terrain_map)
+
+
 func is_allocation_pending() -> bool:
     return allocator.is_pending()
 
@@ -43,17 +51,21 @@ func get_wounds_left() -> int:
     return allocator.get_wounds_left()
 
 
-## Orders `firing` to shoot at `target`. A valid order always resolves and
-## spends the activation, even if no model can fire; if wounds go unsaved the
-## activation ends once the defender has allocated them.
+## Orders `firing` to shoot at `target`. A target no firing model can see is
+## refused without spending the activation. Otherwise a valid order always
+## resolves and spends the activation, even if no model can fire (e.g. out of
+## range); if wounds go unsaved the activation ends once the defender has
+## allocated them.
 func order_shot(firing: SquadState, target: SquadState) -> ShootingRules.OrderResult:
     var result := ShootingRules.OrderResult.ALLOCATION_PENDING if allocator.is_pending() else \
         ShootingRules.validate_order(firing, target, _turn_manager.current_phase,
             _activation.is_active_squad(firing))
+    if result == ShootingRules.OrderResult.OK and not ShootingRules.has_visible_target(firing, target, line_of_sight):
+        result = ShootingRules.OrderResult.NO_VISIBLE_TARGET
     if result != ShootingRules.OrderResult.OK:
         shot_rejected.emit(firing, target, result)
         return result
-    var outcome := ShootingRules.resolve(firing, target, line_of_sight, dice)
+    var outcome := ShootingRules.resolve(firing, target, line_of_sight, dice, terrain)
     DamageRules.resolve_wounds_and_saves(outcome, dice)
     allocator.begin(outcome)
     return result

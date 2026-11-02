@@ -44,6 +44,11 @@ class Allocation:
 var attack_type := AttackType.RANGED
 var attacker_squad: SquadState
 var target_squad: SquadState
+## Defender's squad-wide cover and majority armour save when the attack began.
+var target_cover := TerrainPiece.Cover.NONE
+var target_armor_save := 0
+## D6 roll each attack needed to hit (Quality plus Shaken and cover modifiers).
+var hit_target := 0
 var model_results: Array[ModelResult] = []
 var allocations: Array[Allocation] = []
 ## Unsaved wounds left unallocated because the target squad was destroyed.

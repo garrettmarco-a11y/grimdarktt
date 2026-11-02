@@ -10,6 +10,8 @@ class_name HUD
 @onready var activation_panel: ActivationPanel = $ActivationPanel
 @onready var allocation_panel: AllocationPanel = $AllocationPanel
 
+var _movement: MovementController
+
 
 func bind_turn_manager(turn_manager: TurnManager) -> void:
     turn_manager.phase_changed.connect(phase_banner.show_phase)
@@ -23,7 +25,13 @@ func bind_activation(activation: ActivationController, selection: SelectionManag
     activation_panel.bind(activation, selection)
 
 
+## Terrain for the info panel's cover line.
+func bind_terrain(terrain: TerrainMap) -> void:
+    squad_info_panel.terrain = terrain
+
+
 func bind_movement(movement: MovementController) -> void:
+    _movement = movement
     movement.move_ordered.connect(_on_move_ordered)
     movement.move_rejected.connect(_on_move_rejected)
 
@@ -79,9 +87,11 @@ func _on_move_rejected(state: SquadState, destination: Vector2, result: Movement
         MovementRules.Result.OFF_BOARD:
             order_feedback.text = "Destination is off the battlefield"
         MovementRules.Result.OUT_OF_RANGE:
-            order_feedback.text = "Out of range: %.1f > %s" % [
-                MovementRules.distance(state.turn_start_position, destination),
-                String.num(state.movement_allowance)]
+            var cost := _movement.order_cost(state, destination) if _movement \
+                else MovementRules.distance(state.turn_start_position, destination)
+            order_feedback.text = "Out of range: %.1f > %s" % [cost, String.num(state.movement_allowance)]
+        MovementRules.Result.IMPASSABLE:
+            order_feedback.text = "Path blocked by impassable terrain"
 
 
 func _on_attack_resolved(result: CombatResult) -> void:
@@ -106,6 +116,8 @@ func _on_shot_rejected(_firing: SquadState, _target: SquadState, result: Shootin
             order_feedback.text = "Allocate the pending wounds first"
         ShootingRules.OrderResult.MORALE_RESTRICTED:
             order_feedback.text = "Morale: this squad cannot shoot this turn"
+        ShootingRules.OrderResult.NO_VISIBLE_TARGET:
+            order_feedback.text = "No model can see that squad"
 
 
 func _on_assault_rejected(_attacker: SquadState, _target: SquadState, result: AssaultRules.OrderResult) -> void:
@@ -137,6 +149,8 @@ static func format_combat_result(result: CombatResult) -> String:
     var melee := result.attack_type == CombatResult.AttackType.MELEE
     lines.append("%s %s %s" % [result.attacker_squad.data.display_name, "assaulted" if melee else "shot",
         result.target_squad.data.display_name])
+    lines.append("Target: %s cover, armour %s; hits on %d+" % [TerrainPiece.cover_name(result.target_cover),
+        "%d+" % result.target_armor_save if result.target_armor_save > 0 else "none", result.hit_target])
     lines.append("%s: %d  Unable: %d" % ["Fought" if melee else "Fired", result.get_eligible_count(),
         result.get_ineligible_count()])
     lines.append("Attacks %d: %d hit, %d miss" % [result.get_total_attacks(), result.get_hits(), result.get_misses()])

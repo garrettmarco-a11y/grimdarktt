@@ -1,4 +1,4 @@
-[gd_scene load_steps=18 format=3]
+[gd_scene load_steps=30 format=3]
 
 [ext_resource type="Script" path="res://scripts/core/Main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://scenes/core/GameBoard.tscn" id="2_board"]
@@ -15,6 +15,13 @@
 [ext_resource type="Script" path="res://scripts/shooting/ShootingController.gd" id="13_shooting"]
 [ext_resource type="Script" path="res://scripts/assault/AssaultController.gd" id="14_assault"]
 [ext_resource type="Script" path="res://scripts/morale/MoraleController.gd" id="15_morale"]
+[ext_resource type="Script" path="res://scripts/terrain/TerrainSetup.gd" id="16_terrain_setup"]
+[ext_resource type="Script" path="res://scripts/terrain/TerrainLayer.gd" id="17_layer"]
+[ext_resource type="Resource" path="res://data/terrain/scrubland.tres" id="t_scrub"]
+[ext_resource type="Resource" path="res://data/terrain/ruins.tres" id="t_ruins"]
+[ext_resource type="Resource" path="res://data/terrain/mud_flats.tres" id="t_mud"]
+[ext_resource type="Resource" path="res://data/terrain/wall.tres" id="t_wall"]
+[ext_resource type="Resource" path="res://data/terrain/crater.tres" id="t_crater"]
 
 [sub_resource type="Resource" id="Resource_p1_setup"]
 script = ExtResource("6_setup")
@@ -26,12 +33,46 @@ script = ExtResource("6_setup")
 squad = ExtResource("8_p2_squad")
 start_position = Vector2(36, 16)
 
+[sub_resource type="Resource" id="Resource_terrain_scrub"]
+script = ExtResource("16_terrain_setup")
+piece = ExtResource("t_scrub")
+position = Vector2(12, 5)
+rotation_degrees = 0.0
+
+[sub_resource type="Resource" id="Resource_terrain_ruins"]
+script = ExtResource("16_terrain_setup")
+piece = ExtResource("t_ruins")
+position = Vector2(24, 26.5)
+rotation_degrees = 15.0
+
+[sub_resource type="Resource" id="Resource_terrain_mud"]
+script = ExtResource("16_terrain_setup")
+piece = ExtResource("t_mud")
+position = Vector2(36, 5)
+rotation_degrees = 0.0
+
+[sub_resource type="Resource" id="Resource_terrain_wall"]
+script = ExtResource("16_terrain_setup")
+piece = ExtResource("t_wall")
+position = Vector2(24, 6)
+rotation_degrees = 30.0
+
+[sub_resource type="Resource" id="Resource_terrain_crater"]
+script = ExtResource("16_terrain_setup")
+piece = ExtResource("t_crater")
+position = Vector2(9, 26.5)
+rotation_degrees = 0.0
+
 [node name="Main" type="Node"]
 script = ExtResource("1_main")
 squad_setups = Array[ExtResource("6_setup")]([SubResource("Resource_p1_setup"), SubResource("Resource_p2_setup")])
+terrain_setups = Array[ExtResource("16_terrain_setup")]([SubResource("Resource_terrain_scrub"), SubResource("Resource_terrain_ruins"), SubResource("Resource_terrain_mud"), SubResource("Resource_terrain_wall"), SubResource("Resource_terrain_crater")])
 
 [node name="GameBoard" parent="." instance=ExtResource("2_board")]
 position = Vector2(160, 64)
+
+[node name="TerrainLayer" type="Node2D" parent="GameBoard"]
+script = ExtResource("17_layer")
 
 [node name="MovementOverlay" type="Node2D" parent="GameBoard"]
 script = ExtResource("10_overlay")

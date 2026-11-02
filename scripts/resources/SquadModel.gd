@@ -11,5 +11,8 @@ class_name SquadModel
 @export var weapon: WeaponProfile
 ## The model's melee weapon, or null if it has none. Its range is unused.
 @export var melee_weapon: WeaponProfile
+## Armour save for this model alone (e.g. different equipment); -1 uses the
+## squad profile's armor_save.
+@export var armor_save_override := -1
 ## Position relative to the squad's anchor (the leader), in board units.
 @export var formation_offset := Vector2.ZERO

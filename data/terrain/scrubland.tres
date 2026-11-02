@@ -1,0 +1,9 @@
+[gd_resource type="Resource" script_class="TerrainPiece" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/terrain/TerrainPiece.gd" id="1_piece"]
+
+[resource]
+script = ExtResource("1_piece")
+terrain_name = "Scrubland"
+footprint = PackedVector2Array(-4.0, -2.5, 4.0, -2.5, 4.0, 2.5, -4.0, 2.5)
+cover = 1
