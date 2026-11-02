@@ -6,4 +6,4 @@
 script = ExtResource("1_piece")
 terrain_name = "Wall"
 los_blocker = PackedVector2Array(-3.5, -0.3, 3.5, -0.3, 3.5, 0.3, -3.5, 0.3)
-impassable = true
+impassable_area = PackedVector2Array(-3.5, -0.3, 3.5, -0.3, 3.5, 0.3, -3.5, 0.3)

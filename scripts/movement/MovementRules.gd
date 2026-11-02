@@ -21,7 +21,7 @@ class_name MovementRules
 ##     position to its destination (the squad keeps its formation). Distance in
 ##     difficult terrain costs double; the squad's cost is its most restricted
 ##     model's, checked against the (possibly halved) allowance. No model may
-##     pass through impassable terrain.
+##     pass through a terrain piece's impassable_area.
 
 enum Result { OK, NO_SQUAD, WRONG_PHASE, NOT_ACTIVATED, MOVEMENT_COMPLETE, OFF_BOARD, OUT_OF_RANGE, IMPASSABLE }
 

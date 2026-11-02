@@ -15,6 +15,7 @@ class Placed:
     var piece: TerrainPiece
     var footprint := PackedVector2Array()
     var los_blocker := PackedVector2Array()
+    var impassable_area := PackedVector2Array()
 
 
 ## Why a configuration or piece was refused; empty while the map is valid.
@@ -111,15 +112,14 @@ func movement_cost(from: Vector2, to: Vector2) -> float:
     return length * (1.0 + TerrainGeometry.total_length(TerrainGeometry.merge_intervals(inside)))
 
 
-## True if a straight move from `from` to `to` passes through any part of an
-## impassable piece (its footprint or line-of-sight geometry).
+## True if a straight move from `from` to `to` passes through the interior of
+## any impassable area. Only impassable_area counts; footprints and
+## line-of-sight geometry never block movement. Touching a vertex or running
+## along an edge is not crossing.
 func crosses_impassable(from: Vector2, to: Vector2) -> bool:
     for placed in _placed:
-        if not placed.piece.impassable:
-            continue
-        for polygon in [placed.footprint, placed.los_blocker]:
-            if not TerrainGeometry.interior_intervals(from, to, polygon).is_empty():
-                return true
+        if not TerrainGeometry.interior_intervals(from, to, placed.impassable_area).is_empty():
+            return true
     return false
 
 
@@ -128,6 +128,7 @@ func _place(piece: TerrainPiece, position: Vector2, rotation: float) -> Placed:
     placed.piece = piece
     placed.footprint = TerrainGeometry.transform_polygon(piece.footprint, position, rotation)
     placed.los_blocker = TerrainGeometry.transform_polygon(piece.los_blocker, position, rotation)
+    placed.impassable_area = TerrainGeometry.transform_polygon(piece.impassable_area, position, rotation)
     return placed
 
 

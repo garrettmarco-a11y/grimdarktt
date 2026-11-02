@@ -2840,13 +2840,13 @@ func _rect_poly(x0: float, y0: float, x1: float, y1: float) -> PackedVector2Arra
 
 ## A terrain piece for tests. Temporary fixture data.
 func _piece(footprint := PackedVector2Array(), blocker := PackedVector2Array(),
-        cover := TerrainPiece.Cover.NONE, difficult := false, impassable := false) -> TerrainPiece:
+        cover := TerrainPiece.Cover.NONE, difficult := false, impassable_area := PackedVector2Array()) -> TerrainPiece:
     var piece := TerrainPiece.new()
     piece.footprint = footprint
     piece.los_blocker = blocker
     piece.cover = cover
     piece.difficult = difficult
-    piece.impassable = impassable
+    piece.impassable_area = impassable_area
     return piece
 
 
@@ -2981,7 +2981,7 @@ func test_terrain_properties_are_independent() -> void:
     var light_open := _piece(_rect_poly(10.0, 0.0, 14.0, 4.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT)
     var wall := _piece(PackedVector2Array(), _rect_poly(20.0, 0.0, 21.0, 4.0))
     var mud := _piece(_rect_poly(30.0, 0.0, 34.0, 4.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)
-    var rock := _piece(PackedVector2Array(), _rect_poly(40.0, 0.0, 41.0, 4.0), TerrainPiece.Cover.NONE, false, true)
+    var rock := _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(40.0, 0.0, 41.0, 4.0))
     var odd := _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.HEAVY, true)
     var terrain := _terrain([bare, light_open, wall, mud, rock, odd])
     _check_eq(terrain.pieces_at(Vector2(2.0, 2.0)), [bare], "footprint without cover still contains models")
@@ -2995,7 +2995,8 @@ func test_terrain_properties_are_independent() -> void:
     _check_eq(terrain.movement_cost(Vector2(28.0, 2.0), Vector2(36.0, 2.0)), 12.0, "difficult terrain without cover")
     _check_eq(terrain.cover_at(Vector2(32.0, 2.0)), TerrainPiece.Cover.NONE, "... gives no cover")
     _check(not terrain.is_segment_blocked(Vector2(28.0, 2.0), Vector2(36.0, 2.0)), "... nor blocks LoS")
-    _check(terrain.crosses_impassable(Vector2(38.0, 2.0), Vector2(43.0, 2.0)), "impassable without footprint or cover")
+    _check(terrain.crosses_impassable(Vector2(38.0, 2.0), Vector2(43.0, 2.0)), "impassable area without footprint or cover")
+    _check(not terrain.is_segment_blocked(Vector2(38.0, 2.0), Vector2(43.0, 2.0)), "... and without LoS geometry")
     _check(not terrain.crosses_impassable(Vector2(28.0, 2.0), Vector2(36.0, 2.0)), "difficult is not impassable")
     _check_eq(terrain.cover_at(Vector2(0.0, 30.0)), TerrainPiece.Cover.NONE, "cover needs a footprint")
 
@@ -3140,8 +3141,10 @@ func test_difficult_terrain_with_shaken_allowance() -> void:
 
 
 func test_impassable_terrain_rejects_any_model_path() -> void:
-    var wall := _piece(PackedVector2Array(), _rect_poly(10.0, 14.0, 11.0, 20.0), TerrainPiece.Cover.NONE, false, true)
+    var shape := _rect_poly(10.0, 14.0, 11.0, 20.0)
+    var wall := _piece(PackedVector2Array(), shape, TerrainPiece.Cover.NONE, false, shape)
     var terrain := _terrain([wall])
+    _check(terrain.is_segment_blocked(Vector2(6.0, 15.0), Vector2(14.0, 15.0)), "a wall with matching polygons blocks sight")
     var squad := _squad_at(&"s", P1, [Vector2(6.0, 5.0), Vector2(6.0, 15.0)])
     squad.begin_turn_movement(10.0)
     var board := Vector2(48.0, 32.0)
@@ -3152,6 +3155,35 @@ func test_impassable_terrain_rejects_any_model_path() -> void:
     _check_eq(MovementRules.validate(squad, Vector2(6.0, 4.0), Phase.MOVEMENT, board, true, terrain),
         MovementRules.Result.OK, "moving away")
     _check(not terrain.crosses_impassable(Vector2(8.0, 16.0), Vector2(12.0, 12.0)), "grazing a corner only is not crossing")
+    _check(not terrain.crosses_impassable(Vector2(10.0, 12.0), Vector2(10.0, 22.0)), "running along an edge is not crossing")
+    _check(not terrain.crosses_impassable(Vector2(6.0, 17.0), Vector2(10.0, 17.0)), "stopping on the edge is not crossing")
+    var edge_squad := _squad_at(&"e", P1, [Vector2(6.0, 17.0)])
+    edge_squad.begin_turn_movement(6.0)
+    _check_eq(MovementRules.validate(edge_squad, Vector2(10.0, 17.0), Phase.MOVEMENT, board, true, terrain),
+        MovementRules.Result.OK, "a move ending in contact with the wall is legal")
+
+
+func test_impassable_geometry_is_independent() -> void:
+    var los_only := _piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 11.0, 30.0))
+    var ruin := _piece(_rect_poly(20.0, 0.0, 24.0, 30.0), _rect_poly(20.0, 0.0, 24.0, 30.0), TerrainPiece.Cover.HEAVY, true)
+    var barricade := _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(30.0, 0.0, 31.0, 30.0))
+    var split := _piece(PackedVector2Array(), _rect_poly(40.0, 0.0, 42.0, 30.0), TerrainPiece.Cover.NONE, false,
+        _rect_poly(40.0, 0.0, 42.0, 10.0))
+    var terrain := _terrain([los_only, ruin, barricade, split])
+    _check(terrain.is_segment_blocked(Vector2(8.0, 5.0), Vector2(13.0, 5.0)), "LoS blocker blocks sight...")
+    _check(not terrain.crosses_impassable(Vector2(8.0, 5.0), Vector2(13.0, 5.0)), "... but not movement without impassable geometry")
+    _check(not terrain.crosses_impassable(Vector2(18.0, 5.0), Vector2(26.0, 5.0)),
+        "a footprint (even one blocking LoS) without impassable geometry is traversable")
+    _check(terrain.crosses_impassable(Vector2(28.0, 5.0), Vector2(33.0, 5.0)), "impassable area without LoS geometry blocks movement")
+    _check(not terrain.is_segment_blocked(Vector2(28.0, 5.0), Vector2(33.0, 5.0)), "... but not sight")
+    _check(terrain.crosses_impassable(Vector2(38.0, 5.0), Vector2(44.0, 5.0)), "impassable part of a split piece")
+    _check(not terrain.crosses_impassable(Vector2(38.0, 20.0), Vector2(44.0, 20.0)),
+        "impassable area differs from the LoS polygon: passable where only sight is blocked")
+    _check(terrain.is_segment_blocked(Vector2(38.0, 20.0), Vector2(44.0, 20.0)), "... though sight is still blocked there")
+    var squad := _squad_at(&"s", P1, [Vector2(6.0, 5.0)])
+    squad.begin_turn_movement(10.0)
+    _check_eq(MovementRules.validate(squad, Vector2(14.0, 5.0), Phase.MOVEMENT, Vector2(48.0, 32.0), true, terrain),
+        MovementRules.Result.OK, "a squad may move through a LoS-only wall")
 
 
 func test_multiple_orders_measured_from_turn_start_with_terrain() -> void:
@@ -3179,7 +3211,7 @@ func test_fallback_ignores_terrain() -> void:
     var f := _morale_fixture([broken, enemy], [6, 6])
     var terrain := _terrain([
         _piece(_rect_poly(5.0, 0.0, 9.0, 30.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
-        _piece(PackedVector2Array(), _rect_poly(6.0, 0.0, 6.5, 30.0), TerrainPiece.Cover.NONE, false, true),
+        _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(6.0, 0.0, 6.5, 30.0)),
     ])
     f.movement.terrain = terrain
     broken.morale_status = SquadState.MoraleStatus.BROKEN
@@ -3378,6 +3410,10 @@ func test_terrain_in_main_scene() -> void:
         if not piece.footprint.is_empty() and not piece.los_blocker.is_empty():
             kinds["footprint_and_blocker"] = true
     _check_eq(kinds.size(), 5, "light, heavy, difficult, blocker-only, and footprint-plus-blocker terrain present")
+    var walls := placed.filter(func(p): return p.piece.terrain_name == "Wall")
+    _check(walls.size() == 1 and walls[0].impassable_area == walls[0].los_blocker,
+        "the Wall's impassable area matches its LoS geometry")
+    _check_eq(placed.filter(func(p): return not p.impassable_area.is_empty()).size(), 1, "only the Wall is impassable")
     for squad in main.battle.get_squads():
         for model in squad.get_living_models():
             _check_eq(terrain.pieces_at(squad.get_model_position(model)), [], "%s starts clear of terrain" % squad.squad_id)
