@@ -97,6 +97,28 @@ static func blocks_between(a: Vector2, b: Vector2, polygon: PackedVector2Array) 
     return false
 
 
+## Area of a simple polygon (absolute value, either winding).
+static func polygon_area(polygon: PackedVector2Array) -> float:
+    var twice := 0.0
+    for i in polygon.size():
+        var a := polygon[i]
+        var b := polygon[(i + 1) % polygon.size()]
+        twice += a.x * b.y - b.x * a.y
+    return absf(twice) * 0.5
+
+
+## True if the two polygons share interior area (more than EPSILON squared).
+## Touching along an edge or at a vertex is not an overlap; containment and
+## identical polygons are.
+static func polygons_overlap(a: PackedVector2Array, b: PackedVector2Array) -> bool:
+    if a.size() < 3 or b.size() < 3:
+        return false
+    var shared := 0.0
+    for piece in Geometry2D.intersect_polygons(a, b):
+        shared += polygon_area(piece)
+    return shared > EPSILON * EPSILON
+
+
 static func total_length(intervals: Array[Vector2]) -> float:
     var total := 0.0
     for interval in intervals:

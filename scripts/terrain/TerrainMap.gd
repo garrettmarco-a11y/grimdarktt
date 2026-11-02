@@ -3,6 +3,11 @@ class_name TerrainMap
 ## The battlefield's placed terrain (runtime, static for the battle) and its
 ## geometry queries, in board units. Independent of BattleState and of any
 ## visual node; rules and views receive it by injection.
+##
+## Footprints may never overlap (touching edges or vertices is allowed). A
+## configuration with overlapping footprints is rejected whole, and add()
+## refuses a piece that would overlap; `errors` explains why. Line-of-sight
+## geometry may overlap anything.
 
 
 ## One placed piece with its polygons in board coordinates.
@@ -12,29 +17,55 @@ class Placed:
     var los_blocker := PackedVector2Array()
 
 
+## Why a configuration or piece was refused; empty while the map is valid.
+var errors := PackedStringArray()
+
 var _placed: Array[Placed] = []
 
 
+## Builds the map from `setups`. If any two footprints overlap, the whole
+## configuration is rejected: the map stays empty and `errors` names every
+## overlapping pair.
 func _init(setups: Array[TerrainSetup] = []) -> void:
-    for setup in setups:
+    var candidates: Array[Placed] = []
+    var labels := PackedStringArray()
+    for i in setups.size():
+        var setup := setups[i]
         if setup and setup.piece:
-            add(setup.piece, setup.position, deg_to_rad(setup.rotation_degrees))
+            candidates.append(_place(setup.piece, setup.position, deg_to_rad(setup.rotation_degrees)))
+            labels.append("setup #%d %s at %s" % [i, _name_of(setup.piece), setup.position])
+    for i in candidates.size():
+        for j in range(i + 1, candidates.size()):
+            if TerrainGeometry.polygons_overlap(candidates[i].footprint, candidates[j].footprint):
+                _refuse("%s and %s" % [labels[i], labels[j]])
+    if errors.is_empty():
+        _placed = candidates
 
 
-## Places `piece` with its local origin at `position`, rotated `rotation` radians.
-func add(piece: TerrainPiece, position := Vector2.ZERO, rotation := 0.0) -> void:
-    var placed := Placed.new()
-    placed.piece = piece
-    placed.footprint = TerrainGeometry.transform_polygon(piece.footprint, position, rotation)
-    placed.los_blocker = TerrainGeometry.transform_polygon(piece.los_blocker, position, rotation)
+func is_valid() -> bool:
+    return errors.is_empty()
+
+
+## Places `piece` with its local origin at `position`, rotated `rotation`
+## radians. Refused (returns false, map unchanged) if its footprint would
+## overlap one already placed.
+func add(piece: TerrainPiece, position := Vector2.ZERO, rotation := 0.0) -> bool:
+    var placed := _place(piece, position, rotation)
+    for other in _placed:
+        if TerrainGeometry.polygons_overlap(placed.footprint, other.footprint):
+            _refuse("%s at %s and placed %s" % [_name_of(piece), position, _name_of(other.piece)])
+            return false
     _placed.append(placed)
+    return true
 
 
 func get_placed() -> Array[Placed]:
     return _placed
 
 
-## Pieces whose footprint contains `point` (boundary included).
+## Pieces whose footprint contains `point` (boundary included). Footprints
+## never overlap, so this is at most one piece, or two or more only exactly on
+## a boundary they share.
 func pieces_at(point: Vector2) -> Array[TerrainPiece]:
     var pieces: Array[TerrainPiece] = []
     for placed in _placed:
@@ -43,12 +74,17 @@ func pieces_at(point: Vector2) -> Array[TerrainPiece]:
     return pieces
 
 
-## Cover for a model at `point`: the best cover among the footprints containing it.
+## Cover for a model at `point`: that of the footprint containing it, or NONE.
+## Boundary convention: a point exactly on a boundary shared by touching
+## footprints takes the less protective of their covers.
 func cover_at(point: Vector2) -> TerrainPiece.Cover:
-    var best := TerrainPiece.Cover.NONE
-    for piece in pieces_at(point):
-        best = maxi(best, piece.cover) as TerrainPiece.Cover
-    return best
+    var pieces := pieces_at(point)
+    if pieces.is_empty():
+        return TerrainPiece.Cover.NONE
+    var cover := pieces[0].cover
+    for piece in pieces:
+        cover = mini(cover, piece.cover) as TerrainPiece.Cover
+    return cover
 
 
 ## True if any line-of-sight geometry obstructs the segment from `from` to `to`.
@@ -65,7 +101,7 @@ func is_segment_blocked(from: Vector2, to: Vector2) -> bool:
 
 ## Movement cost of a straight move from `from` to `to`: distance outside
 ## difficult terrain costs 1 per board unit, distance inside it costs 2.
-## Overlapping difficult pieces do not stack.
+## Footprints cannot overlap; merging only joins pieces that touch.
 func movement_cost(from: Vector2, to: Vector2) -> float:
     var length := from.distance_to(to)
     var inside: Array[Vector2] = []
@@ -85,3 +121,21 @@ func crosses_impassable(from: Vector2, to: Vector2) -> bool:
             if not TerrainGeometry.interior_intervals(from, to, polygon).is_empty():
                 return true
     return false
+
+
+func _place(piece: TerrainPiece, position: Vector2, rotation: float) -> Placed:
+    var placed := Placed.new()
+    placed.piece = piece
+    placed.footprint = TerrainGeometry.transform_polygon(piece.footprint, position, rotation)
+    placed.los_blocker = TerrainGeometry.transform_polygon(piece.los_blocker, position, rotation)
+    return placed
+
+
+func _refuse(conflict: String) -> void:
+    var message := "Terrain footprints overlap: %s. Move, resize or rotate one so they share no area (touching edges is allowed)." % conflict
+    errors.append(message)
+    push_error(message)
+
+
+static func _name_of(piece: TerrainPiece) -> String:
+    return "'%s'" % (piece.terrain_name if piece.terrain_name != "" else "unnamed")

@@ -4,8 +4,9 @@ class_name TerrainRules
 ## majority armour save, and the cover modifiers.
 ##
 ## Rules (approved by the project lead):
-##   - A model's cover is that of the footprint it stands in (the best, if in
-##     several).
+##   - A model's cover is that of the footprint it stands in. Footprints never
+##     overlap; on a boundary shared by touching footprints the less protective
+##     cover applies (TerrainMap.cover_at).
 ##   - A squad's cover is the category holding most of its living models; ties
 ##     go to the less protective category (NONE < LIGHT < HEAVY).
 ##   - A squad's armour save is the most common among its living models; ties go

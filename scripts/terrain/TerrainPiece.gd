@@ -4,7 +4,8 @@ class_name TerrainPiece
 ## another or by a terrain category.
 ##
 ##   - footprint: area a model stands in (inclusive boundary). Provides cover
-##     and difficult movement. Empty means no footprint.
+##     and difficult movement. Empty means no footprint. Footprints of placed
+##     pieces may touch but never overlap (enforced by TerrainMap).
 ##   - los_blocker: geometry that obstructs line of sight. Empty means none.
 ##   - difficult: movement through the footprint's interior costs double.
 ##   - impassable: models may not move through any of the piece's geometry

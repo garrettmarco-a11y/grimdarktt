@@ -2902,14 +2902,65 @@ func test_rotated_translated_terrain() -> void:
     _check_eq(from_setup.pieces_at(Vector2(30.0, 6.5)), [piece], "TerrainSetup placement and rotation")
 
 
-func test_overlapping_terrain_pieces() -> void:
-    var light := _piece(_rect_poly(0.0, 0.0, 6.0, 6.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT)
+func test_touching_footprints_boundary_cover() -> void:
+    var light := _piece(_rect_poly(0.0, 0.0, 4.0, 6.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT)
     var heavy := _piece(_rect_poly(4.0, 0.0, 10.0, 6.0), PackedVector2Array(), TerrainPiece.Cover.HEAVY)
     var terrain := _terrain([light, heavy])
-    _check_eq(terrain.pieces_at(Vector2(5.0, 3.0)), [light, heavy], "both pieces in the overlap")
-    _check_eq(terrain.cover_at(Vector2(5.0, 3.0)), TerrainPiece.Cover.HEAVY, "best cover in the overlap")
-    _check_eq(terrain.cover_at(Vector2(2.0, 3.0)), TerrainPiece.Cover.LIGHT, "light only")
-    _check_eq(terrain.cover_at(Vector2(12.0, 3.0)), TerrainPiece.Cover.NONE, "neither")
+    _check(terrain.is_valid(), "touching footprints are legal")
+    _check_eq(terrain.pieces_at(Vector2(2.0, 3.0)), [light], "a single footprint contains an interior point")
+    _check_eq(terrain.cover_at(Vector2(2.0, 3.0)), TerrainPiece.Cover.LIGHT, "light interior")
+    _check_eq(terrain.cover_at(Vector2(7.0, 3.0)), TerrainPiece.Cover.HEAVY, "heavy interior")
+    _check_eq(terrain.pieces_at(Vector2(4.0, 3.0)), [light, heavy], "a shared edge lies in both footprints")
+    _check_eq(terrain.cover_at(Vector2(4.0, 3.0)), TerrainPiece.Cover.LIGHT,
+        "boundary convention: the less protective cover on a shared edge")
+    _check_eq(terrain.cover_at(Vector2(4.0, 6.0)), TerrainPiece.Cover.LIGHT, "... and on a shared vertex")
+    _check_eq(terrain.cover_at(Vector2(12.0, 3.0)), TerrainPiece.Cover.NONE, "outside both")
+
+
+## Builds a TerrainMap from setups of `pieces` at `positions` with `rotations` (degrees).
+func _setups(pieces: Array, positions: Array, rotations: Array = []) -> Array[TerrainSetup]:
+    var setups: Array[TerrainSetup] = []
+    for i in pieces.size():
+        var setup := TerrainSetup.new()
+        setup.piece = pieces[i]
+        setup.position = positions[i]
+        setup.rotation_degrees = rotations[i] if i < rotations.size() else 0.0
+        setups.append(setup)
+    return setups
+
+
+func test_footprint_overlap_validation() -> void:
+    var square := _piece(_rect_poly(-2.0, -2.0, 2.0, 2.0))
+    square.terrain_name = "Square"
+    var small := _piece(_rect_poly(-0.5, -0.5, 0.5, 0.5))
+    small.terrain_name = "Small"
+    var wall := _piece(PackedVector2Array(), _rect_poly(-3.0, -0.2, 3.0, 0.2))
+    print("        (the next 7 errors are expected)")
+    var cases := [
+        ["two disjoint footprints", [square, square], [Vector2(5, 5), Vector2(15, 5)], [], true],
+        ["touching at an edge", [square, square], [Vector2(5, 5), Vector2(9, 5)], [], true],
+        ["touching at a vertex", [square, square], [Vector2(5, 5), Vector2(9, 9)], [], true],
+        ["partial overlap", [square, square], [Vector2(5, 5), Vector2(7, 6)], [], false],
+        ["one contained in another", [square, small], [Vector2(5, 5), Vector2(5.5, 5.5)], [], false],
+        ["identical footprints", [square, square], [Vector2(5, 5), Vector2(5, 5)], [], false],
+        ["overlap after translation", [square, square], [Vector2(5, 5), Vector2(8.9, 5)], [], false],
+        ["overlap after rotation", [square, square], [Vector2(5, 5), Vector2(9.5, 5)], [0.0, 45.0], false],
+        ["rotation back to touching", [square, square], [Vector2(5, 5), Vector2(9, 5)], [0.0, 90.0], true],
+        ["LoS geometry may overlap footprints", [square, wall], [Vector2(5, 5), Vector2(5, 5)], [], true],
+    ]
+    for c in cases:
+        var map := TerrainMap.new(_setups(c[1], c[2], c[3]))
+        _check_eq(map.is_valid(), c[4], c[0])
+        _check_eq(map.get_placed().size(), c[1].size() if c[4] else 0,
+            "%s: %s" % [c[0], "all pieces placed" if c[4] else "configuration rejected whole"])
+    var rejected := TerrainMap.new(_setups([square, small], [Vector2(5, 5), Vector2(5.5, 5.5)]))
+    _check_eq(rejected.errors.size(), 1, "one error per overlapping pair")
+    _check(rejected.errors[0].contains("setup #0 'Square' at (5.0, 5.0)") and rejected.errors[0].contains("setup #1 'Small' at (5.5, 5.5)"),
+        "the error names both conflicting pieces and where they stand: %s" % rejected.errors[0])
+    var incremental := _terrain([_piece(_rect_poly(0.0, 0.0, 4.0, 4.0))])
+    _check(not incremental.add(_piece(_rect_poly(3.0, 3.0, 6.0, 6.0))), "add() refuses an overlapping piece")
+    _check_eq(incremental.get_placed().size(), 1, "the map is unchanged")
+    _check(incremental.add(_piece(_rect_poly(4.0, 0.0, 6.0, 4.0))), "add() accepts a touching piece")
 
 
 func test_footprint_membership_per_model() -> void:
@@ -3041,10 +3092,11 @@ func test_difficult_terrain_movement_cost() -> void:
     var two := _terrain([
         _piece(_rect_poly(10.0, 0.0, 14.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
         _piece(_rect_poly(20.0, 0.0, 22.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
-        _piece(_rect_poly(12.0, 0.0, 16.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
+        _piece(_rect_poly(14.0, 0.0, 16.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
     ])
+    _check(two.is_valid(), "three non-overlapping difficult pieces")
     _check_cost(two.movement_cost(Vector2(8.0, 5.0), Vector2(24.0, 5.0)), 24.0,
-        "two separate pieces (10-16 overlapping, not stacked, and 20-22): 16 + 6 + 2")
+        "touching pieces 10-14 and 14-16 joined, plus 20-22: 16 + 6 + 2")
 
 
 func test_squad_movement_through_difficult_terrain() -> void:
@@ -3201,6 +3253,25 @@ func test_no_visible_target_refused_without_spending_activation() -> void:
     _free_morale_fixture(f)
 
 
+func test_visible_but_out_of_range_spends_activation() -> void:
+    var firing := _squad_at(&"p1_f", P1, [Vector2(2.0, 5.0)])
+    var target := _squad_at(&"p2_t", P2, [Vector2(45.0, 5.0)])
+    var f := _morale_fixture([firing, target], [])
+    f.shooting.set_terrain(_terrain([_piece(PackedVector2Array(), _rect_poly(20.0, 10.0, 22.0, 30.0))]))
+    _advance_to(f, Phase.SHOOTING, 1)
+    f.activation.activate(firing)
+    f.shooting.dice = ScriptedDice.new([])
+    var results := []
+    f.shooting.shot_resolved.connect(func(r): results.append(r))
+    _check(ShootingRules.has_visible_target(firing, target, f.shooting.line_of_sight), "target visible past the blocker")
+    _check_eq(f.shooting.order_shot(firing, target), ShootingRules.OrderResult.OK, "visible: order accepted")
+    _check_eq(results[0].model_results[0].eligibility, CombatResult.Eligibility.OUT_OF_RANGE, "43 away, rifle range 30")
+    _check_eq(results[0].get_total_attacks(), 0, "zero attacks")
+    _check(f.activation.has_activated(firing), "activation spent")
+    _check_eq(f.activation.get_active_player(), P2, "control passes")
+    _free_morale_fixture(f)
+
+
 func test_unseen_models_can_take_allocated_wounds() -> void:
     var firing := _squad_at(&"p1_f", P1, [Vector2(10.0, 0.0)])
     var target := _squad_at(&"p2_t", P2, [Vector2(20.0, 0.0), Vector2(20.0, 20.0)])
@@ -3291,6 +3362,7 @@ func test_terrain_in_main_scene() -> void:
     _check(layer != null and layer.get_index() < main.get_node("GameBoard/MovementOverlay").get_index(),
         "terrain layer drawn beneath the overlay and tokens")
     var placed := terrain.get_placed()
+    _check(terrain.is_valid(), "the default terrain has no overlapping footprints: %s" % terrain.errors)
     _check_eq(placed.size(), 5, "five placed pieces")
     var kinds := {}
     for p in placed:

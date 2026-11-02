@@ -29,6 +29,8 @@ var casualties := CasualtyAllocator.new()
 
 
 func _ready() -> void:
+    # An invalid configuration (overlapping footprints) is reported by
+    # TerrainMap and leaves the battlefield without terrain.
     terrain = TerrainMap.new(terrain_setups)
     terrain_layer.bind(terrain)
     for setup in squad_setups:
