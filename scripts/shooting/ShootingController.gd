@@ -14,7 +14,7 @@ var line_of_sight := LineOfSight.new()
 var dice := DiceRoller.new()
 ## Battlefield terrain for cover; use set_terrain() so line of sight follows it.
 var terrain: TerrainMap
-## Shared with the AssaultController; created here if none is supplied.
+## Shared with the EngagementController; created here if none is supplied.
 var allocator: CasualtyAllocator
 
 var _turn_manager: TurnManager

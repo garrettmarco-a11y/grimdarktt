@@ -124,8 +124,9 @@ func test_phase_order() -> void:
     for i in 4:
         _play_phase(tm, 1, 1)
     _check_eq(changes, [
-        [Phase.SHOOTING, 1], [Phase.ASSAULT, 1], [Phase.MORALE, 1], [Phase.MOVEMENT, 2],
-    ], "phase_changed sequence")
+        [Phase.SHOOTING, 1], [Phase.MORALE, 1], [Phase.CHARGE, 1], [Phase.ASSAULT, 1], [Phase.CONSOLIDATION, 1],
+        [Phase.MOVEMENT, 2],
+    ], "phase_changed sequence: six phases; Assault and Consolidation (no procedure registered) end at once")
     tm.free()
 
 
@@ -148,10 +149,10 @@ func test_priority_set_at_turn_start_and_held_for_turn() -> void:
     var tm := _new_game()
     _check_eq(_play_phase(tm, 1, 3), [P2, P1, P2, P2], "Movement 1 vs 3")
     _check_eq(_play_phase(tm, 3, 1), [P2, P1, P1, P1], "Shooting keeps Player 2 priority")
-    _check_eq(_play_phase(tm, 4, 2), [P2, P1, P2, P1, P1, P1], "Assault keeps Player 2 priority")
     _check_eq(_play_phase(tm, 2, 0), [P1, P1], "Morale: priority holder with no tests is skipped")
-    _check_eq(tm.priority_player, P2, "priority held through Morale")
-    _check_eq(tm.turn_number, 2, "turn advanced")
+    _check_eq(_play_phase(tm, 4, 2), [P2, P1, P2, P1, P1, P1], "Charge keeps Player 2 priority")
+    _check_eq(tm.priority_player, P2, "priority held through the turn")
+    _check_eq(tm.turn_number, 2, "turn advanced after Consolidation")
     _check_eq(_play_phase(tm, 3, 1), [P1, P2, P1, P1], "next turn's Movement recalculates")
     _check_eq(tm.priority_player, P1, "priority after next turn's Movement")
     tm.free()
@@ -185,17 +186,17 @@ func test_empty_phase_ends_immediately() -> void:
     tm.free()
 
 
-func test_turn_advances_after_morale() -> void:
+func test_turn_advances_after_consolidation() -> void:
     var tm := _new_game()
     var turns := []
     tm.turn_started.connect(func(turn): turns.append(turn))
     for i in 3:
         _play_phase(tm, 1, 2)
-    _check_eq(tm.current_phase, Phase.MORALE, "phase before morale completes")
-    _check_eq(tm.turn_number, 1, "turn before morale completes")
+    _check_eq(tm.current_phase, Phase.CHARGE, "Morale no longer ends the turn")
+    _check_eq(tm.turn_number, 1, "turn before Assault and Consolidation")
     _play_phase(tm, 1, 0)
-    _check_eq(tm.current_phase, Phase.MOVEMENT, "phase after morale")
-    _check_eq(tm.turn_number, 2, "turn after morale")
+    _check_eq(tm.current_phase, Phase.MOVEMENT, "phase after the Assault and Consolidation procedures")
+    _check_eq(tm.turn_number, 2, "turn after Consolidation")
     _check_eq(turns, [2], "turn_started emissions")
     tm.free()
 
@@ -704,7 +705,7 @@ func test_no_move_orders_outside_movement_phase() -> void:
     var fixture := _movement_fixture([_make_mover(6.0, Vector2(10.0, 10.0))])
     var state: SquadState = fixture.battle.get_squad(&"mover")
     var tm: TurnManager = fixture.tm
-    for phase in [Phase.SHOOTING, Phase.ASSAULT, Phase.MORALE]:
+    for phase in [Phase.SHOOTING, Phase.MORALE, Phase.CHARGE]:
         _play_phase(tm, 1, 1)
         _check_eq(tm.current_phase, phase, "advanced to %s" % TurnManager.phase_to_string(phase))
         _check_eq(fixture.movement.order_move(state, Vector2(11.0, 10.0)), MovementRules.Result.WRONG_PHASE,
@@ -923,10 +924,10 @@ func test_full_progression_through_all_phases() -> void:
     var tm: TurnManager = f.tm
     var phases := []
     tm.phase_started.connect(func(phase, _turn, _priority): phases.append(phase))
-    for i in 3:
+    for i in 2:
         _complete_phase(f.activation, f.battle, tm)
-    _check_eq(phases, [Phase.SHOOTING, Phase.ASSAULT, Phase.MORALE, Phase.MOVEMENT],
-        "Shooting, Assault, Morale (no tests, passes at once), then Movement")
+    _check_eq(phases, [Phase.SHOOTING, Phase.MORALE, Phase.CHARGE, Phase.ASSAULT, Phase.CONSOLIDATION, Phase.MOVEMENT],
+        "Shooting, Morale and Charge (nothing eligible: pass at once), Assault, Consolidation (procedure), Movement")
     _check_eq(tm.turn_number, 2, "new turn")
     _check_eq(tm.current_phase, Phase.MOVEMENT, "back to Movement")
     _free_activation_fixture(f)
@@ -1199,9 +1200,10 @@ func test_shooting_only_in_shooting_phase() -> void:
     _complete_phase(f.activation, f.battle, f.tm)
     _check_eq(f.tm.current_phase, Phase.SHOOTING, "now Shooting")
     _complete_phase(f.activation, f.battle, f.tm)
-    _check_eq(f.tm.current_phase, Phase.ASSAULT, "now Assault")
+    _check_eq([f.tm.current_phase, f.tm.turn_number], [Phase.MOVEMENT, 2],
+        "Shooting over: Morale, Charge, Assault and Consolidation have nothing to do; next round")
     f.activation.activate(f.battle.get_squad(&"p1_a"))
-    _check_eq(f.shooting.order_shot(p1, p2), ShootingRules.OrderResult.WRONG_PHASE, "refused in Assault")
+    _check_eq(f.shooting.order_shot(p1, p2), ShootingRules.OrderResult.WRONG_PHASE, "refused once Shooting is over")
     _check_eq(ShootingRules.validate_order(p1, p2, Phase.MORALE, true), ShootingRules.OrderResult.WRONG_PHASE,
         "refused in Morale")
     _free_shooting_fixture(f)
@@ -1262,7 +1264,7 @@ func test_shooting_spends_activation_and_passes_control() -> void:
     f.shooting.allocate_wound(0)
     _check_eq(f.battle.get_squad(&"p1_a"), null, "Player 1's single model removed, squad destroyed")
     _check_eq(f.activation.active_squad, null, "Player 2's activation completed")
-    _check_eq(f.tm.current_phase, Phase.ASSAULT, "phase advances once both have shot")
+    _check_eq([f.tm.current_phase, f.tm.turn_number], [Phase.MOVEMENT, 2], "the phase advances once both have shot (to the next round)")
     _free_shooting_fixture(f)
 
 
@@ -1622,7 +1624,7 @@ func test_destroyed_squad_removed_through_battle() -> void:
     _check(results[0].target_destroyed, "result reports the destruction")
     _check_eq(results[0].get_casualties(), PackedStringArray(["A", "B"]), "casualties in order")
     _check_eq(f.activation.active_squad, null, "shooter completed its activation")
-    _check_eq(tm.current_phase, Phase.ASSAULT, "defender's activation removed, so the phase ends")
+    _check_eq([tm.current_phase, tm.turn_number], [Phase.MOVEMENT, 2], "defender's activation removed, so the phase ends (and the round)")
     _free_shooting_fixture(f)
 
 
@@ -1640,7 +1642,7 @@ func test_morale_eligibility_follows_losses() -> void:
     hurt.take_wound(1)
     _check(ActivationController.is_eligible(hurt, Phase.MORALE), "lost a model: eligible for Morale")
     _check(not ActivationController.is_eligible(fresh, Phase.MORALE), "untouched squad: not eligible")
-    for i in 3:
+    for i in 2:
         _complete_phase(activation, battle, tm)
     _check(hurt.lost_models_since_morale, "flag kept through the turn until Morale")
     _check_eq(tm.current_phase, Phase.MORALE, "Morale phase held for the eligible squad")
@@ -1651,7 +1653,7 @@ func test_morale_eligibility_follows_losses() -> void:
     _check(hurt.lost_models_since_morale, "flag kept during its Morale activation")
     activation.end_activation()
     _check(not hurt.lost_models_since_morale, "flag cleared once its Morale opportunity is resolved")
-    _check_eq(tm.turn_number, 2, "turn advances after Morale")
+    _check_eq([tm.current_phase, tm.turn_number], [Phase.MOVEMENT, 2], "Morale ends; nothing charges, so the round ends")
     tm.free()
     activation.free()
 
@@ -1733,7 +1735,8 @@ func test_target_destroyed_in_main_scene() -> void:
     _check_eq(info.name_label.text, SquadInfoPanel.EMPTY_TEXT, "info panel cleared")
     _check(feedback.text.contains("Raider Squad destroyed"), "destruction reported")
     _check_eq(activation.active_squad, null, "Line Squad's activation completed")
-    _check_eq(tm.current_phase, Phase.ASSAULT, "Player 2 has nothing left, so play moves on")
+    _check_eq([tm.current_phase, tm.turn_number], [Phase.MOVEMENT, 2],
+        "Player 2 has nothing left: Charge has no target and Assault no engagement, so the round ends")
     main.queue_free()
     await process_frame
 
@@ -1777,10 +1780,9 @@ func test_morale_flags_persist_until_each_squads_morale_activation() -> void:
     _check(hurt_p1.lost_models_since_morale, "flag survives ending Movement activations, including its own")
     hurt_p2.take_wound(1)
     _complete_phase(activation, f.battle, tm)
-    _complete_phase(activation, f.battle, tm)
     _check_eq(tm.current_phase, Phase.MORALE, "Morale phase held for the flagged squads")
     _check(hurt_p1.lost_models_since_morale and hurt_p2.lost_models_since_morale,
-        "both flags survive Shooting and Assault activations")
+        "both flags survive Shooting activations")
     _check_eq([tm.get_remaining_activations(P1), tm.get_remaining_activations(P2)], [1, 1],
         "one Morale activation each; the unflagged squad gets none")
     _check_eq(activation.activate(fresh_p2), ActivationController.Result.NOT_ELIGIBLE, "unflagged squad not eligible")
@@ -1797,7 +1799,7 @@ func test_morale_flags_persist_until_each_squads_morale_activation() -> void:
     _check(hurt_p1.lost_models_since_morale, "p1_a flag kept while its Morale activation is open")
     activation.end_activation()
     _check(not hurt_p1.lost_models_since_morale, "p1_a cleared after its own Morale activation")
-    _check_eq(tm.turn_number, 2, "turn advances only after both Morale opportunities")
+    _check_eq([tm.current_phase, tm.turn_number], [Phase.MOVEMENT, 2], "Morale ends only after both Morale opportunities; nothing charges, so the round ends")
     _free_battle_fixture(f)
 
 
@@ -1888,37 +1890,11 @@ func _make_melee(attacks: int, strength := 3, armor_piercing := 0) -> WeaponProf
     return weapon
 
 
-## A started game with `squads`, activation, shooting and assault, sharing one
-## CasualtyAllocator as in Main.
-func _assault_fixture(squads: Array) -> Dictionary:
-    var battle := BattleState.new()
-    for state in squads:
-        battle.add_squad(state)
-    var tm := TurnManager.new()
-    var activation := ActivationController.new()
-    activation.bind(battle, tm)
-    var allocator := CasualtyAllocator.new()
-    allocator.bind(activation, battle)
-    var shooting := ShootingController.new()
-    shooting.bind(tm, activation, battle, allocator)
-    var assault := AssaultController.new()
-    assault.bind(tm, activation, battle, allocator)
-    tm.start_game()
-    return {"battle": battle, "tm": tm, "activation": activation, "allocator": allocator,
-        "shooting": shooting, "assault": assault}
 
-
-func _free_assault_fixture(f: Dictionary) -> void:
-    f.tm.free()
-    f.activation.free()
-    f.shooting.free()
-    f.assault.free()
-
-
-## Advances `f` from Movement to the Assault phase with every squad passing.
-func _to_assault(f: Dictionary) -> void:
-    _complete_phase(f.activation, f.battle, f.tm)
-    _complete_phase(f.activation, f.battle, f.tm)
+## One squad's melee strike against `target`, with eligibility snapshotted as
+## the Assault procedure does (contact, or support from a squad-mate in contact).
+func _melee_strike(attacker: SquadState, target: SquadState, dice: DiceRoller, terrain: TerrainMap = null) -> CombatResult:
+    return AssaultRules.resolve_strike(attacker, target, AssaultRules.engagement_eligible(attacker, [target]), dice, terrain)
 
 
 func test_placeholder_melee_weapons() -> void:
@@ -1937,62 +1913,46 @@ func test_placeholder_melee_weapons() -> void:
     _check_eq(state.get_model(0).get_melee_weapon(), chain, "ModelState exposes the melee weapon")
 
 
-func test_engagement_distance_boundaries() -> void:
-    _check(AssaultRules.is_engaged(1.99), "within 2.0 engaged")
-    _check(AssaultRules.is_engaged(2.0), "exactly 2.0 engaged")
-    _check(not AssaultRules.is_engaged(2.01), "beyond 2.0 not engaged")
-    var blade := _make_melee(1)
-    var at_two: Array[Vector2] = [Vector2(12.0, 10.0)]
-    _check_eq(AssaultRules.evaluate_model("A", blade, Vector2(10.0, 10.0), at_two).eligibility,
-        CombatResult.Eligibility.ELIGIBLE, "model exactly 2.0 away may attack")
-    var beyond: Array[Vector2] = [Vector2(12.01, 10.0)]
-    var r := AssaultRules.evaluate_model("B", blade, Vector2(10.0, 10.0), beyond)
-    _check_eq(r.eligibility, CombatResult.Eligibility.NOT_ENGAGED, "model 2.01 away is not engaged")
-    _check(is_equal_approx(r.distance, 2.01), "distance to the nearest target model reported")
-    var diagonal: Array[Vector2] = [Vector2(11.4, 11.4)]
-    _check_eq(AssaultRules.evaluate_model("C", blade, Vector2(10.0, 10.0), diagonal).eligibility,
-        CombatResult.Eligibility.ELIGIBLE, "continuous distance: 1.98 on the diagonal")
-
 
 func test_engagement_uses_model_positions_not_anchors() -> void:
     var blade := _make_melee(1)
-    # Anchors 4 apart: only the attacker's forward model is engaged.
+    # The forward model touches the target; the leader, 3 behind, neither
+    # touches it nor is close enough to support.
     var attacker := _make_shooter(&"a", P1, Vector2(10.0, 10.0),
-        [["Leader", null, Vector2.ZERO, blade], ["Forward", null, Vector2(2.5, 0.0), blade]])
+        [["Leader", null, Vector2.ZERO, blade], ["Forward", null, Vector2(3.0, 0.0), blade]])
     var target := _make_shooter(&"t", P2, Vector2(14.0, 10.0), [["T", null, Vector2.ZERO]])
-    var result := AssaultRules.resolve(attacker, target, ScriptedDice.new([6]))
-    _check_eq(result.model_results[0].eligibility, CombatResult.Eligibility.NOT_ENGAGED, "leader 4 away is not engaged")
-    _check_eq(result.model_results[1].eligibility, CombatResult.Eligibility.ELIGIBLE, "forward model 1.5 away is engaged")
-    # Anchors 1 apart: a model standing back from the anchor is not engaged.
-    var close := _make_shooter(&"c", P1, Vector2(13.0, 10.0),
-        [["Leader", null, Vector2.ZERO, blade], ["Rear", null, Vector2(-5.0, 0.0), blade]])
-    result = AssaultRules.resolve(close, target, ScriptedDice.new([6]))
-    _check_eq(result.model_results[0].eligibility, CombatResult.Eligibility.ELIGIBLE, "leader 1 away is engaged")
-    _check_eq(result.model_results[1].eligibility, CombatResult.Eligibility.NOT_ENGAGED, "rear model 6 away is not")
-    # Target models, not the target anchor: an offset target model brings the attacker into range.
+    var result := _melee_strike(attacker, target, ScriptedDice.new([6]))
+    _check_eq(result.model_results[0].eligibility, CombatResult.Eligibility.NOT_ENGAGED, "leader 2 from its squad-mate: not engaged")
+    _check_eq(result.model_results[1].eligibility, CombatResult.Eligibility.ELIGIBLE, "forward model in contact: engaged")
+    # Target models, not the target anchor: a forward target model 6 from its
+    # anchor engages the attacker.
     var spread := _make_shooter(&"s", P2, Vector2(20.0, 10.0),
-        [["Back", null, Vector2.ZERO], ["Front", null, Vector2(-7.0, 0.0)]])
-    result = AssaultRules.resolve(attacker, spread, ScriptedDice.new([6]))
+        [["Back", null, Vector2.ZERO], ["Front", null, Vector2(-6.0, 0.0)]])
+    result = _melee_strike(attacker, spread, ScriptedDice.new([6]))
     _check_eq(result.model_results[1].eligibility, CombatResult.Eligibility.ELIGIBLE,
-        "engaged with the target's forward model 0.5 away, though its anchor is 7.5 away")
+        "in contact with the target's forward model, though its anchor is 7 away")
 
 
 func test_removed_models_neither_attack_nor_engage() -> void:
     var blade := _make_melee(1)
+    # Fallen touches the target's front model; Leader supports it from 1.0.
     var attacker := _make_shooter(&"a", P1, Vector2(10.0, 10.0),
         [["Leader", null, Vector2.ZERO, blade], ["Fallen", null, Vector2(2.0, 0.0), blade]])
     var target := _make_shooter(&"t", P2, Vector2(15.0, 10.0),
-        [["Back", null, Vector2.ZERO], ["Front", null, Vector2(-3.0, 0.0)]])
-    var result := AssaultRules.resolve(attacker, target, ScriptedDice.new([6, 6]))
-    _check_eq(result.get_eligible_count(), 2, "both attackers engaged with the target's front model")
+        [["Back", null, Vector2.ZERO], ["Front", null, Vector2(-2.0, 0.0)]])
+    var result := _melee_strike(attacker, target, ScriptedDice.new([6, 6]))
+    _check_eq(result.get_eligible_count(), 2, "Fallen in contact, Leader in support")
     attacker.take_wound(1)
-    result = AssaultRules.resolve(attacker, target, ScriptedDice.new([6]))
+    result = _melee_strike(attacker, target, ScriptedDice.new([]))
     _check_eq(result.model_results.size(), 1, "removed attacker contributes no result")
     _check_eq(result.model_results[0].model_name, "Leader", "only the living leader is evaluated")
-    target.take_wound(1)
-    result = AssaultRules.resolve(attacker, target, ScriptedDice.new([]))
     _check_eq(result.model_results[0].eligibility, CombatResult.Eligibility.NOT_ENGAGED,
-        "removed target model no longer engages the attacker")
+        "and it loses its support once the model in contact is gone")
+    target.take_wound(1)
+    attacker.board_position = Vector2(13.0, 10.0)
+    result = _melee_strike(attacker, target, ScriptedDice.new([]))
+    _check_eq(result.model_results[0].eligibility, CombatResult.Eligibility.NOT_ENGAGED,
+        "a removed target model engages nobody, even where it stood")
 
 
 func test_models_without_melee_weapons_or_out_of_reach() -> void:
@@ -2002,12 +1962,12 @@ func test_models_without_melee_weapons_or_out_of_reach() -> void:
         ["Far", null, Vector2(-3.0, 0.0), _make_melee(1)],
         ["Fighter", null, Vector2(0.0, -1.0), _make_melee(1)],
     ])
-    var target := _make_shooter(&"t", P2, Vector2(11.5, 10.0), [["T", null, Vector2.ZERO]])
-    var result := AssaultRules.resolve(attacker, target, ScriptedDice.new([5]))
+    var target := _make_shooter(&"t", P2, Vector2(11.0, 9.0), [["T", null, Vector2.ZERO]])
+    var result := _melee_strike(attacker, target, ScriptedDice.new([5]))
     _check_eq(result.model_results.map(func(r): return r.eligibility), [
         CombatResult.Eligibility.NO_MELEE_WEAPON, CombatResult.Eligibility.NO_MELEE_WEAPON,
         CombatResult.Eligibility.NOT_ENGAGED, CombatResult.Eligibility.ELIGIBLE],
-        "ranged-only and 0-attack models have no melee weapon; the far model is not engaged")
+        "ranged-only and 0-attack models have no melee weapon; the far model neither touches nor supports")
     _check_eq(result.get_eligible_count(), 1, "the ineligible models do not stop the fighter")
     _check_eq(result.get_total_attacks(), 1, "only the fighter attacks")
     _check_eq(result.attack_type, CombatResult.AttackType.MELEE, "result marked as melee")
@@ -2020,7 +1980,7 @@ func test_multiple_attackers_and_attacks() -> void:
         ["One", null, Vector2(0.0, -1.0), _make_melee(1)],
     ], 4)
     var target := _make_shooter(&"t", P2, Vector2(11.0, 10.0), [["T", null, Vector2.ZERO]])
-    var result := AssaultRules.resolve(attacker, target, ScriptedDice.new([4, 3, 6, 1, 5, 2]))
+    var result := _melee_strike(attacker, target, ScriptedDice.new([4, 3, 6, 1, 5, 2]))
     _check_eq(result.get_eligible_count(), 3, "three engaged attackers")
     _check_eq(result.model_results.map(func(r): return r.rolls), [[4, 3], [6, 1, 5], [2]],
         "each model rolls its weapon's attacks independently")
@@ -2031,10 +1991,10 @@ func test_multiple_attackers_and_attacks() -> void:
 func test_melee_hits_use_existing_quality_rule() -> void:
     var target := _make_shooter(&"t", P2, Vector2(11.0, 10.0), [["T", null, Vector2.ZERO]])
     var q4 := _make_shooter(&"q4", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, _make_melee(4)]], 4)
-    var result := AssaultRules.resolve(q4, target, ScriptedDice.new([4, 3, 6, 1]))
+    var result := _melee_strike(q4, target, ScriptedDice.new([4, 3, 6, 1]))
     _check_eq(result.model_results[0].hits, 2, "4 and 6 hit Quality 4; 3 and 1 miss")
     var q1 := _make_shooter(&"q1", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, _make_melee(1)]], 1)
-    result = AssaultRules.resolve(q1, target, ScriptedDice.new([1]))
+    result = _melee_strike(q1, target, ScriptedDice.new([1]))
     _check_eq(result.model_results[0].hits, 1, "established rule kept: no automatic natural-1 miss on hits")
 
 
@@ -2049,7 +2009,7 @@ func test_melee_wounds_across_strength_toughness() -> void:
     var target := _make_shooter(&"t", P2, Vector2(11.0, 10.0), [["T", null, Vector2.ZERO]])
     target.data.profile.toughness = 3
     var dice := ScriptedDice.new([6, 6, 6, 6, 6, 2, 3, 3, 5, 1])
-    var result := AssaultRules.resolve(attacker, target, dice)
+    var result := _melee_strike(attacker, target, dice)
     DamageRules.resolve_wounds_and_saves(result, dice)
     _check_eq(result.model_results.map(func(r): return r.wound_target), [2, 3, 4, 5, 6],
         "S6, S4, S3, S2, S1 against T3: 2+, 3+, 4+, 5+, 6+")
@@ -2064,7 +2024,7 @@ func test_melee_saves_and_ap() -> void:
     target.data.profile.toughness = 4
     target.data.profile.armor_save = 4
     var dice := ScriptedDice.new([6, 6, 4, 4, 5, 4])
-    var result := AssaultRules.resolve(attacker, target, dice)
+    var result := _melee_strike(attacker, target, dice)
     DamageRules.resolve_wounds_and_saves(result, dice)
     var model := result.model_results[0]
     _check_eq(model.save_target, 5, "4+ save against AP1 is 5+")
@@ -2072,153 +2032,52 @@ func test_melee_saves_and_ap() -> void:
     _check_eq([model.saves, result.get_unsaved_wounds()], [1, 1], "5 saves, 4 fails")
 
 
-func test_assault_allocation_and_activation_completion() -> void:
-    var blade := _make_melee(1)
-    var attacker := _make_shooter(&"p1_a", P1, Vector2(10.0, 10.0),
-        [["A", null, Vector2.ZERO, blade], ["B", null, Vector2(0.0, 1.0), blade]])
-    var target := _make_shooter(&"p2_t", P2, Vector2(11.5, 10.0),
-        [["X", null, Vector2.ZERO], ["Y", null, Vector2(0.0, 1.0)], ["Z", null, Vector2(0.0, -1.0)]])
-    var f := _assault_fixture([attacker, target])
-    var assault: AssaultController = f.assault
-    var allocator: CasualtyAllocator = f.allocator
-    var activation: ActivationController = f.activation
-    _to_assault(f)
-    _check_eq(f.tm.current_phase, Phase.ASSAULT, "Assault phase")
-    assault.dice = ScriptedDice.new([6, 6, 6, 6])
-    var prompts := []
-    allocator.allocation_required.connect(func(_r, left): prompts.append(left))
-    var resolved := []
-    assault.assault_resolved.connect(func(r): resolved.append(r))
-    activation.activate(attacker)
-    _check_eq(assault.order_assault(attacker, target), AssaultRules.OrderResult.OK, "assault accepted")
-    _check_eq(prompts, [2], "two unsaved wounds for the defender")
-    _check(activation.locked and activation.is_active_squad(attacker), "attacker's activation held open")
-    _check(not activation.end_activation(), "cannot end the activation mid-allocation")
-    _check_eq(assault.order_assault(attacker, target), AssaultRules.OrderResult.ALLOCATION_PENDING, "no second assault")
-    _check_eq(f.shooting.order_shot(attacker, target), ShootingRules.OrderResult.ALLOCATION_PENDING,
-        "shared allocator also blocks shooting")
-    _check_eq(allocator.allocate_wound(2), DamageRules.AllocationResult.OK, "defender picks Z")
-    _check_eq(allocator.allocate_wound(2), DamageRules.AllocationResult.MODEL_REMOVED, "Z already removed")
-    _check_eq(allocator.allocate_wound(1), DamageRules.AllocationResult.OK, "defender picks Y")
-    _check_eq(resolved.size(), 1, "assault result reported once")
-    _check_eq(resolved[0].get_casualties(), PackedStringArray(["Z", "Y"]), "casualties as allocated")
-    _check_eq(resolved[0].models_remaining, 1, "one model left")
-    _check(not activation.locked, "unlocked")
-    _check(activation.has_activated(attacker), "attacker's activation spent")
-    _check_eq(activation.get_active_player(), P2, "control passes to Player 2")
-    _check_eq(assault.order_assault(attacker, target), AssaultRules.OrderResult.NOT_ACTIVATED, "cannot assault twice")
-    _check_eq(activation.activate(attacker), ActivationController.Result.ALREADY_ACTIVATED, "cannot reactivate")
-    _free_assault_fixture(f)
-
 
 func test_melee_casualties_and_leader_succession() -> void:
     var attacker := _make_shooter(&"p1_a", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, _make_melee(1)]])
-    var target := _make_shooter(&"p2_t", P2, Vector2(11.5, 10.0),
+    var target := _make_shooter(&"p2_t", P2, Vector2(11.0, 10.0),
         [["Leader", null, Vector2.ZERO], ["Second", null, Vector2(1.0, 1.0)]])
-    var f := _assault_fixture([attacker, target])
-    _to_assault(f)
-    f.assault.dice = ScriptedDice.new([6, 6])
+    target.data.profile.leadership = 12
+    var strike_rolls: Array[int] = [6, 6]
+    var f := _engagement_fixture([attacker, target], strike_rolls)
     var second_world := target.get_model_position(target.get_model(1))
-    f.activation.activate(attacker)
-    f.assault.order_assault(attacker, target)
+    _finish_charge_phase(f)
     f.allocator.allocate_wound(0)
     _check(target.get_model(0).removed, "leader killed in melee")
     _check_eq(target.get_leader(), target.get_model(1), "next model promoted")
     _check_eq(target.board_position, second_world, "anchor moved to the new leader")
     _check_eq(target.get_model_position(target.get_model(1)), second_world, "new leader has not moved")
-    _check(target.lost_models_since_morale, "loss recorded for Morale")
-    _free_assault_fixture(f)
+    _check(not target.lost_models_since_morale, "melee casualties do not set the ordinary Morale loss flag")
+    _free_engagement_fixture(f)
 
 
 func test_melee_destruction_discards_excess_wounds() -> void:
     var attacker := _make_shooter(&"p1_a", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, _make_melee(3)]])
-    var spare := _make_shooter(&"p1_spare", P1, Vector2(40.0, 30.0), [["S", null, Vector2.ZERO]])
-    var target := _make_shooter(&"p2_t", P2, Vector2(11.5, 10.0), [["X", null, Vector2.ZERO]])
-    var other := _make_shooter(&"p2_o", P2, Vector2(40.0, 5.0), [["O", null, Vector2.ZERO]])
-    var f := _assault_fixture([attacker, spare, target, other])
-    _to_assault(f)
-    f.assault.dice = ScriptedDice.new([6, 6, 6, 6, 6, 6])
-    var resolved := []
-    f.assault.assault_resolved.connect(func(r): resolved.append(r))
+    var target := _make_shooter(&"p2_t", P2, Vector2(11.0, 10.0), [["X", null, Vector2.ZERO]])
+    var strike_rolls: Array[int] = [6, 6, 6, 6, 6, 6]
+    var f := _engagement_fixture([attacker, target], strike_rolls)
     var removed := []
     f.battle.squad_removed.connect(func(s): removed.append(s.squad_id))
-    f.activation.activate(attacker)
-    f.assault.order_assault(attacker, target)
+    _finish_charge_phase(f)
     _check_eq(f.allocator.get_wounds_left(), 3, "three unsaved wounds against one model")
+    var strike: CombatResult = f.allocator.get_pending_result()
     f.allocator.allocate_wound(0)
     _check(not f.allocator.is_pending(), "allocation over when the last model falls")
-    _check_eq(resolved[0].wasted_wounds, 2, "two excess wounds discarded")
-    _check(resolved[0].target_destroyed, "target destroyed")
+    _check_eq(strike.wasted_wounds, 2, "two excess wounds discarded")
+    _check(strike.target_destroyed, "target destroyed")
     _check_eq(removed, [&"p2_t"], "removed through BattleState")
-    _check(f.activation.has_activated(attacker), "attacker's activation completed")
-    _check_eq(f.activation.get_active_player(), P2, "Player 2 continues with its other squad")
-    _check_eq(f.tm.get_remaining_activations(P2), 1, "only the destroyed squad's activation removed")
-    _free_assault_fixture(f)
-
-
-func test_assault_without_engaged_models_spends_activation() -> void:
-    var attacker := _make_shooter(&"p1_a", P1, Vector2(5.0, 5.0), [["A", null, Vector2.ZERO, _make_melee(2)]])
-    var target := _make_shooter(&"p2_t", P2, Vector2(40.0, 25.0), [["T", null, Vector2.ZERO]])
-    var f := _assault_fixture([attacker, target])
-    _to_assault(f)
-    f.assault.dice = ScriptedDice.new([])
-    var resolved := []
-    f.assault.assault_resolved.connect(func(r): resolved.append(r))
-    f.activation.activate(attacker)
-    _check_eq(f.assault.order_assault(attacker, target), AssaultRules.OrderResult.OK, "attempt accepted")
-    _check_eq([resolved[0].get_eligible_count(), resolved[0].get_total_attacks()], [0, 0], "zero attacks")
-    _check_eq(resolved[0].model_results[0].eligibility, CombatResult.Eligibility.NOT_ENGAGED, "reason reported")
-    _check(f.activation.has_activated(attacker), "activation spent anyway")
-    _check_eq(f.activation.get_active_player(), P2, "control passes")
-    _free_assault_fixture(f)
-
-
-func test_assault_order_restrictions() -> void:
-    var blade := _make_melee(1)
-    var p1 := _make_shooter(&"p1_a", P1, Vector2(10.0, 10.0), [["A", null, Vector2.ZERO, blade]])
-    var ally := _make_shooter(&"p1_b", P1, Vector2(11.0, 10.0), [["B", null, Vector2.ZERO, blade]])
-    var p2 := _make_shooter(&"p2_a", P2, Vector2(10.0, 11.0), [["C", null, Vector2.ZERO, blade]])
-    var p2b := _make_shooter(&"p2_b", P2, Vector2(30.0, 20.0), [["D", null, Vector2.ZERO, blade]])
-    var f := _assault_fixture([p1, ally, p2, p2b])
-    var assault: AssaultController = f.assault
-    var activation: ActivationController = f.activation
-    activation.activate(p1)
-    _check_eq(assault.order_assault(p1, p2), AssaultRules.OrderResult.WRONG_PHASE, "refused in Movement")
-    activation.end_activation()
-    _complete_phase(activation, f.battle, f.tm)
-    activation.activate(p1)
-    _check_eq(assault.order_assault(p1, p2), AssaultRules.OrderResult.WRONG_PHASE, "refused in Shooting")
-    _check(activation.is_active_squad(p1), "refused order does not spend the activation")
-    activation.end_activation()
-    _complete_phase(activation, f.battle, f.tm)
-    _check_eq(f.tm.current_phase, Phase.ASSAULT, "Assault phase")
-    _check_eq(AssaultRules.validate_order(p1, p2, Phase.MORALE, true), AssaultRules.OrderResult.WRONG_PHASE,
-        "refused in Morale")
-    _check_eq(activation.get_active_player(), P1, "Player 1 to activate")
-    _check_eq(activation.activate(p2), ActivationController.Result.WRONG_PLAYER, "cannot activate the opponent's squad")
-    _check_eq(assault.order_assault(p2, p1), AssaultRules.OrderResult.NOT_ACTIVATED, "cannot assault with it")
-    _check_eq(assault.order_assault(null, p2), AssaultRules.OrderResult.NO_SQUAD, "no squad activated")
-    activation.activate(p1)
-    _check_eq(assault.order_assault(p1, p1), AssaultRules.OrderResult.OWN_SQUAD, "cannot assault itself")
-    _check_eq(assault.order_assault(p1, ally), AssaultRules.OrderResult.OWN_SQUAD, "cannot assault an allied squad")
-    _check_eq(assault.order_assault(p1, null), AssaultRules.OrderResult.NO_TARGET, "needs a target")
-    _check(activation.is_active_squad(p1), "refusals leave the activation open")
-    assault.dice = ScriptedDice.new([1])
-    _check_eq(assault.order_assault(p1, p2), AssaultRules.OrderResult.OK, "valid assault")
-    _check_eq(assault.order_assault(p1, p2), AssaultRules.OrderResult.NOT_ACTIVATED, "no second assault this phase")
-    _free_assault_fixture(f)
+    _check_eq(f.log.resolved[0].reason, EngagementOutcome.Reason.SIDE_DESTROYED, "and Player 1 wins the engagement outright")
+    _free_engagement_fixture(f)
 
 
 func test_shared_allocator_reports_by_attack_type() -> void:
     var main: Node = await _load_main()
     var shooting: ShootingController = main.get_node("ShootingController")
-    var assault: AssaultController = main.get_node("AssaultController")
-    _check(shooting.allocator == main.casualties and assault.allocator == main.casualties,
-        "Main shares one allocator between shooting and assault")
+    _check(shooting.allocator == main.casualties, "Main shares one allocator between shooting and the engagement procedure")
     var shots := []
-    var assaults := []
     shooting.shot_resolved.connect(func(r): shots.append(r.attack_type))
-    assault.assault_resolved.connect(func(r): assaults.append(r.attack_type))
+    var queued := []
+    main.casualties.queue_resolved.connect(func(rs): queued.append(rs.map(func(r): return r.attack_type)))
     var ranged := CombatResult.new()
     ranged.attacker_squad = main.battle.get_squad(&"p1_line_squad")
     ranged.target_squad = main.battle.get_squad(&"p2_raider_squad")
@@ -2229,10 +2088,10 @@ func test_shared_allocator_reports_by_attack_type() -> void:
     var activation: ActivationController = main.get_node("ActivationController")
     activation.activate(ranged.attacker_squad)
     main.casualties.begin(ranged)
-    activation.activate(ranged.target_squad)
-    main.casualties.begin(melee)
+    var strikes: Array[CombatResult] = [melee]
+    main.casualties.enqueue(strikes)
     _check_eq(shots, [CombatResult.AttackType.RANGED], "shot_resolved only for ranged results")
-    _check_eq(assaults, [CombatResult.AttackType.MELEE], "assault_resolved only for melee results")
+    _check_eq(queued, [[CombatResult.AttackType.MELEE]], "melee strikes resolve through the queue")
     main.queue_free()
     await process_frame
 
@@ -2279,52 +2138,6 @@ func test_hud_assault_report() -> void:
     ]), "assault report")
 
 
-func test_assault_in_main_scene() -> void:
-    var main: Node = await _load_main()
-    var layer: SquadLayer = main.get_node("GameBoard/Squads")
-    var activation: ActivationController = main.get_node("ActivationController")
-    var assault: AssaultController = main.get_node("AssaultController")
-    var panel: ActivationPanel = main.get_node("HUD/ActivationPanel")
-    var allocation: AllocationPanel = main.get_node("HUD/AllocationPanel")
-    var feedback: Label = main.get_node("HUD/OrderFeedback")
-    var tm: TurnManager = main.get_node("TurnManager")
-    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
-    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
-    # Close the Raiders in: Sergeant and right Trooper engaged; left Trooper too
-    # far; Gunner engaged but has no melee weapon.
-    raider.board_position = Vector2(13.5, 16.0)
-    _complete_phase(activation, main.battle, tm)
-    _complete_phase(activation, main.battle, tm)
-    _check_eq(tm.current_phase, Phase.ASSAULT, "Assault phase")
-    # Hits: Chainblade 6, 6; Combat Blade 6. Chainblade S4 vs T3 (3+): 6, 2;
-    # save 6+ (5+ with AP1): 3. Combat Blade S3 vs T3 (4+): 5; save 5+: 2.
-    assault.dice = ScriptedDice.new([6, 6, 6, 6, 2, 3, 5, 2])
-    _click(layer.get_token(&"p1_line_squad").global_position)
-    panel.action_button.pressed.emit()
-    _check(activation.is_active_squad(line), "Line Squad activated")
-    _check_eq(panel.hint_label.text, "Right-click an enemy squad to assault", "assault prompt")
-    _right_click(layer.get_token(&"p2_raider_squad").global_position)
-    _check(allocation.visible, "defender asked to allocate")
-    _check_eq(allocation.title_label.text, "Player 2: allocate 2 wounds to Raider Squad", "allocation prompt")
-    _check_eq(panel.hint_label.text, "Waiting for wound allocation", "attacker waits")
-    allocation.get_button(1).pressed.emit()
-    allocation.get_button(2).pressed.emit()
-    _check(not allocation.visible, "allocation finished")
-    _check_eq(raider.get_model_count(), 1, "two Raiders fell")
-    _check(feedback.text.begins_with("Line Squad assaulted Raider Squad"), "assault reported")
-    _check(feedback.text.contains("Fought: 2  Unable: 2"), "per-model eligibility")
-    _check(feedback.text.contains("Attacks 3: 3 hit, 0 miss"), "attacks and hits")
-    _check(feedback.text.contains("Wounds 2: 0 saved, 2 unsaved"), "wounds and saves")
-    _check(feedback.text.contains("Trooper: not engaged"), "out-of-reach Trooper explained")
-    _check(feedback.text.contains("Gunner: no melee weapon"), "Gunner explained")
-    _check(feedback.text.contains("Casualties: Raider, Raider"), "casualties")
-    _check(feedback.text.contains("Raider Squad: 1 models left"), "remaining models")
-    _check(activation.has_activated(line), "Line Squad's activation spent")
-    _check_eq(panel.player_label.text, "Player 2 to activate", "control passes")
-    main.queue_free()
-    await process_frame
-
-
 ## A started game with every controller bound, including morale with scripted
 ## dice. Squads are [SquadState] built by _make_shooter; Leadership 7.
 func _morale_fixture(squads: Array, morale_rolls: Array[int] = []) -> Dictionary:
@@ -2342,18 +2155,16 @@ func _morale_fixture(squads: Array, morale_rolls: Array[int] = []) -> Dictionary
     allocator.bind(activation, battle)
     var shooting := ShootingController.new()
     shooting.bind(tm, activation, battle, allocator)
-    var assault := AssaultController.new()
-    assault.bind(tm, activation, battle, allocator)
     var morale := MoraleController.new()
     morale.bind(battle, tm, activation, Vector2(48.0, 32.0))
     morale.dice = ScriptedDice.new(morale_rolls)
     tm.start_game()
     return {"battle": battle, "tm": tm, "activation": activation, "movement": movement,
-        "shooting": shooting, "assault": assault, "morale": morale}
+        "shooting": shooting, "morale": morale}
 
 
 func _free_morale_fixture(f: Dictionary) -> void:
-    for key in ["tm", "activation", "movement", "shooting", "assault", "morale"]:
+    for key in ["tm", "activation", "movement", "shooting", "morale"]:
         f[key].free()
 
 
@@ -2439,7 +2250,7 @@ func test_ordinary_morale_phase() -> void:
     _check(not hurt.lost_models_since_morale, "loss flag cleared")
     _check_eq(tested, [&"p2_lucky", &"p1_hurt"], "one test each, despite three casualties")
     _check(f.morale.dice.rolls.is_empty(), "exactly two dice per test")
-    _check_eq(f.tm.turn_number, 2, "turn advances after the Morale phase")
+    _check_eq([f.tm.current_phase, f.tm.turn_number], [Phase.MOVEMENT, 2], "the Morale phase ends; nothing charges, so the round ends")
     _free_morale_fixture(f)
 
 
@@ -2454,7 +2265,7 @@ func test_broken_squad_skips_ordinary_test() -> void:
     _check_eq(f.activation.activate(broken), ActivationController.Result.OK, "Broken squad's Morale activation")
     _check_eq(broken.morale_status, SquadState.MoraleStatus.BROKEN, "still Broken; no ordinary test")
     _check(not broken.lost_models_since_morale, "loss flag still cleared")
-    _check_eq(f.tm.turn_number, 2, "activation ended by itself")
+    _check_eq([f.tm.current_phase, f.tm.turn_number], [Phase.MOVEMENT, 2], "activation ended by itself; nothing charges, so the round ends")
     _free_morale_fixture(f)
 
 
@@ -2489,12 +2300,12 @@ func test_shaken_hit_penalty_in_shooting_and_assault() -> void:
     var target := _make_shooter(&"t", P2, Vector2(11.0, 10.0), [["T", null, Vector2.ZERO]])
     _check_eq(MoraleRules.hit_target(attacker), 4, "Steady: Quality 4")
     var shot := ShootingRules.resolve(attacker, target, LineOfSight.new(), ScriptedDice.new([3, 4, 5, 6]))
-    var melee := AssaultRules.resolve(attacker, target, ScriptedDice.new([3, 4, 5, 6]))
+    var melee := _melee_strike(attacker, target, ScriptedDice.new([3, 4, 5, 6]))
     _check_eq([shot.get_hits(), melee.get_hits()], [3, 3], "Steady: 4, 5, 6 hit in both")
     attacker.morale_status = SquadState.MoraleStatus.SHAKEN
     _check_eq(MoraleRules.hit_target(attacker), 5, "Shaken: -1 to hit means 5+")
     shot = ShootingRules.resolve(attacker, target, LineOfSight.new(), ScriptedDice.new([3, 4, 5, 6]))
-    melee = AssaultRules.resolve(attacker, target, ScriptedDice.new([3, 4, 5, 6]))
+    melee = _melee_strike(attacker, target, ScriptedDice.new([3, 4, 5, 6]))
     _check_eq([shot.get_hits(), melee.get_hits()], [2, 2], "Shaken: only 5 and 6 hit in both")
     attacker.data.profile.quality = 6
     _check_eq(MoraleRules.hit_target(attacker), 7, "Shaken Quality 6 needs 7+")
@@ -2503,7 +2314,7 @@ func test_shaken_hit_penalty_in_shooting_and_assault() -> void:
     _check(ShootingRules.is_hit(4, 4) and not ShootingRules.is_hit(3, 4), "underlying hit rule unchanged")
 
 
-func test_shaken_consolidation() -> void:
+func test_shaken_regroup() -> void:
     var gun := _make_weapon(30.0, 1)
     var shaken := _squad(&"p1_s", P1, Vector2(10.0, 10.0), 2, gun, _make_melee(1))
     var enemy := _squad(&"p2_e", P2, Vector2(11.0, 13.0), 1)
@@ -2512,17 +2323,17 @@ func test_shaken_consolidation() -> void:
     var morale: MoraleController = f.morale
     shaken.morale_status = SquadState.MoraleStatus.SHAKEN
     _advance_to(f, Phase.MOVEMENT, 2)
-    _check_eq(morale.consolidate(shaken), MoraleController.ConsolidateResult.NOT_ACTIVATED, "must be activated")
+    _check_eq(morale.regroup(shaken), MoraleController.RegroupResult.NOT_ACTIVATED, "must be activated")
     f.activation.activate(other)
     f.activation.end_activation()
     f.activation.activate(enemy)
-    _check_eq(morale.consolidate(enemy), MoraleController.ConsolidateResult.NOT_SHAKEN, "only Shaken squads")
+    _check_eq(morale.regroup(enemy), MoraleController.RegroupResult.NOT_SHAKEN, "only Shaken squads")
     f.activation.end_activation()
     f.activation.activate(shaken)
     var events := []
-    morale.consolidated.connect(func(s): events.append(s.squad_id))
-    _check_eq(morale.consolidate(shaken), MoraleController.ConsolidateResult.OK, "consolidates")
-    _check_eq(events, [&"p1_s"], "consolidation reported")
+    morale.regrouped.connect(func(s): events.append(s.squad_id))
+    _check_eq(morale.regroup(shaken), MoraleController.RegroupResult.OK, "regroups")
+    _check_eq(events, [&"p1_s"], "regroup reported")
     _check_eq(shaken.morale_status, SquadState.MoraleStatus.STEADY, "Shaken removed")
     _check(shaken.morale_restricted_this_turn, "restricted for the turn")
     _check_eq(shaken.movement_allowance, 3.0, "half movement")
@@ -2532,11 +2343,9 @@ func test_shaken_consolidation() -> void:
     _check_eq(f.activation.activate(shaken), ActivationController.Result.OK, "Player 1 activates it first")
     _check_eq(f.shooting.order_shot(shaken, enemy), ShootingRules.OrderResult.MORALE_RESTRICTED, "cannot shoot")
     _check(f.activation.is_active_squad(shaken), "refusal leaves the activation open")
-    _check_eq(morale.consolidate(shaken), MoraleController.ConsolidateResult.WRONG_PHASE, "consolidate only in Movement")
-    f.activation.end_activation()
-    _advance_to(f, Phase.ASSAULT, 2)
-    _check_eq(f.activation.activate(shaken), ActivationController.Result.OK, "Player 1 activates it first")
-    _check_eq(f.assault.order_assault(shaken, enemy), AssaultRules.OrderResult.MORALE_RESTRICTED, "cannot assault")
+    _check_eq(morale.regroup(shaken), MoraleController.RegroupResult.WRONG_PHASE, "regroup only in Movement")
+    _check_eq(ChargeRules.validate(shaken, enemy, Phase.CHARGE, true, f.battle.get_squads(), null),
+        ChargeRules.Result.MORALE_RESTRICTED, "cannot charge this turn")
     f.activation.end_activation()
     _advance_to(f, Phase.MOVEMENT, 3)
     _check(not shaken.morale_restricted_this_turn, "restriction lifted next turn")
@@ -2544,7 +2353,7 @@ func test_shaken_consolidation() -> void:
     _free_morale_fixture(f)
 
 
-func test_shaken_without_consolidating_keeps_penalties() -> void:
+func test_shaken_without_regrouping_keeps_penalties() -> void:
     var gun := _make_weapon(30.0, 1)
     var shaken := _squad(&"p1_s", P1, Vector2(10.0, 10.0), 1, gun)
     var enemy := _squad(&"p2_e", P2, Vector2(20.0, 10.0), 1)
@@ -2607,10 +2416,9 @@ func test_successful_rally() -> void:
     _advance_to(f, Phase.SHOOTING, 1)
     f.activation.activate(broken)
     _check_eq(f.shooting.order_shot(broken, enemy), ShootingRules.OrderResult.MORALE_RESTRICTED, "no shooting this turn")
+    _check_eq(ChargeRules.validate(broken, enemy, Phase.CHARGE, true, f.battle.get_squads(), null),
+        ChargeRules.Result.MORALE_RESTRICTED, "no charge this turn")
     f.activation.end_activation()
-    _advance_to(f, Phase.ASSAULT, 1)
-    f.activation.activate(broken)
-    _check_eq(f.assault.order_assault(broken, enemy), AssaultRules.OrderResult.MORALE_RESTRICTED, "no assault this turn")
     _free_morale_fixture(f)
 
 
@@ -2630,7 +2438,7 @@ func test_failed_rally_falls_back_full_movement() -> void:
     _check_eq(broken.board_position, Vector2(4.0, 12.0), "fell back its full M of 6, even though it had been Shaken")
     _check(broken.movement_complete, "no further voluntary movement")
     _check_eq(f.activation.active_squad, null, "activation ended")
-    _check(broken.morale_restricted_this_turn, "no shooting or assault this turn")
+    _check(broken.morale_restricted_this_turn, "no shooting or charging this turn")
     _advance_to(f, Phase.SHOOTING, 1)
     f.activation.activate(broken)
     _check_eq(f.shooting.order_shot(broken, enemy), ShootingRules.OrderResult.MORALE_RESTRICTED, "cannot shoot")
@@ -2685,13 +2493,13 @@ func test_fallback_off_battlefield_removes_squad() -> void:
     _free_morale_fixture(f)
 
 
-func test_broken_squad_cannot_initiate_assault() -> void:
+func test_broken_squad_cannot_charge_or_shoot() -> void:
     var broken := _squad(&"p1_b", P1, Vector2(24.0, 16.0), 1, null, _make_melee(1))
-    var enemy := _squad(&"p2_e", P2, Vector2(25.0, 16.0), 1)
+    var enemy := _squad(&"p2_e", P2, Vector2(27.0, 16.0), 1)
     broken.morale_status = SquadState.MoraleStatus.BROKEN
     _check(not MoraleRules.may_attack(broken), "Broken squads may not attack")
-    _check_eq(AssaultRules.validate_order(broken, enemy, Phase.ASSAULT, true), AssaultRules.OrderResult.MORALE_RESTRICTED,
-        "assault refused for a Broken squad")
+    _check_eq(ChargeRules.validate(broken, enemy, Phase.CHARGE, true, [broken, enemy], null), ChargeRules.Result.MORALE_RESTRICTED,
+        "a charge is refused for a Broken squad")
     _check_eq(ShootingRules.validate_order(broken, enemy, Phase.SHOOTING, true), ShootingRules.OrderResult.MORALE_RESTRICTED,
         "shooting refused for a Broken squad")
 
@@ -2718,16 +2526,17 @@ func test_resolve_assault_loss() -> void:
     _free_morale_fixture(f)
 
 
-func test_rallied_squad_can_still_be_assaulted() -> void:
+func test_rallied_squad_can_still_be_charged_and_fight() -> void:
     var rallied := _squad(&"p1_r", P1, Vector2(24.0, 16.0), 1, null, _make_melee(1))
-    var enemy := _squad(&"p2_e", P2, Vector2(25.0, 16.0), 1, null, _make_melee(1))
+    var enemy := _squad(&"p2_e", P2, Vector2(28.0, 16.0), 1, null, _make_melee(1))
     rallied.morale_restricted_this_turn = true
-    _check_eq(AssaultRules.validate_order(enemy, rallied, Phase.ASSAULT, true), AssaultRules.OrderResult.OK,
-        "an enemy may still assault the rallied squad")
-    var counter := AssaultRules.resolve(rallied, enemy, ScriptedDice.new([6]))
-    _check_eq(counter.get_hits(), 1, "its melee resolution still works for future defensive fighting")
-    _check_eq(AssaultRules.validate_order(rallied, enemy, Phase.ASSAULT, true), AssaultRules.OrderResult.MORALE_RESTRICTED,
-        "but it may not initiate an assault")
+    _check_eq(ChargeRules.validate(enemy, rallied, Phase.CHARGE, true, [rallied, enemy], null), ChargeRules.Result.OK,
+        "an enemy may still charge the rallied squad")
+    _check_eq(ChargeRules.validate(rallied, enemy, Phase.CHARGE, true, [rallied, enemy], null), ChargeRules.Result.MORALE_RESTRICTED,
+        "but it may not charge")
+    enemy.board_position = Vector2(25.0, 16.0)
+    var counter := _melee_strike(rallied, enemy, ScriptedDice.new([6]))
+    _check_eq(counter.get_hits(), 1, "and it still fights once engaged")
 
 
 func test_allocator_handles_attacker_removed_during_resolution() -> void:
@@ -2787,7 +2596,7 @@ func test_hud_morale_report() -> void:
     result.removed = true
     _check_eq(HUD.format_morale_result(result), "\n".join([
         "Line rally test: 6+5=11 vs Ld 6 (7, -1 below half)",
-        "Failed: still Broken, no shooting or assault this turn",
+        "Failed: still Broken, no shooting or charging this turn",
         "Fell back off the south edge: removed",
     ]), "rally failure report")
     result.kind = MoraleResult.Kind.ORDINARY
@@ -2801,7 +2610,7 @@ func test_hud_morale_report() -> void:
     squad.morale_status = SquadState.MoraleStatus.SHAKEN
     _check_eq(SquadInfoPanel.status_text(squad), "Shaken", "status text")
     squad.morale_restricted_this_turn = true
-    _check_eq(SquadInfoPanel.status_text(squad), "Shaken (no shooting/assault)", "restriction shown")
+    _check_eq(SquadInfoPanel.status_text(squad), "Shaken (no shooting/charging)", "restriction shown")
 
 
 func test_morale_ui_in_main_scene() -> void:
@@ -2819,14 +2628,14 @@ func test_morale_ui_in_main_scene() -> void:
     _check_eq(layer.get_token(&"p1_line_squad").morale_status, SquadState.MoraleStatus.SHAKEN, "token shows Shaken")
     _click(layer.get_token(&"p1_line_squad").global_position)
     _check_eq(info.status_label.text, "Status: Shaken", "info panel shows Shaken")
-    _check(not panel.consolidate_button.visible, "no Consolidate before activating")
+    _check(not panel.regroup_button.visible, "no Regroup before activating")
     panel.action_button.pressed.emit()
-    _check(panel.consolidate_button.visible, "Consolidate offered to the active Shaken squad")
-    panel.consolidate_button.pressed.emit()
-    _check_eq(line.morale_status, SquadState.MoraleStatus.STEADY, "consolidated")
-    _check(not panel.consolidate_button.visible, "Consolidate no longer offered")
-    _check_eq(info.status_label.text, "Status: Steady (no shooting/assault)", "restriction shown")
-    _check(feedback.text.begins_with("Line Squad consolidates"), "consolidation reported")
+    _check(panel.regroup_button.visible, "Regroup offered to the active Shaken squad")
+    panel.regroup_button.pressed.emit()
+    _check_eq(line.morale_status, SquadState.MoraleStatus.STEADY, "regrouped")
+    _check(not panel.regroup_button.visible, "Regroup no longer offered")
+    _check_eq(info.status_label.text, "Status: Steady (no shooting/charging)", "restriction shown")
+    _check(feedback.text.begins_with("Line Squad regroups"), "regroup reported")
     panel.action_button.pressed.emit()
     # Raider Squad, Broken near the east edge, fails its rally and falls off the board.
     raider.board_position = Vector2(44.0, 16.0)
@@ -3524,9 +3333,10 @@ func test_cover_modifiers_in_combat() -> void:
     _check_eq([r.hit_target, r.get_hits()], [7, 0], "Quality 5 + Shaken + heavy = 7+: cannot hit")
     firing.morale_status = SquadState.MoraleStatus.STEADY
     firing.data.profile.quality = 4
-    var melee := AssaultRules.resolve(firing, heavy, ScriptedDice.new([4]), terrain)
+    var brawler := _squad_at(&"b", P1, [Vector2(19.0, 12.0)])
+    var melee := _melee_strike(brawler, heavy, ScriptedDice.new([4]), terrain)
     _check_eq([melee.target_cover, melee.hit_target, melee.get_hits()], [TerrainPiece.Cover.HEAVY, 5, 0],
-        "heavy cover applies in melee")
+        "heavy cover applies in melee: 4 misses")
     DamageRules.resolve_wounds_and_saves(melee, ScriptedDice.new([]))
     _check_eq(CombatModifiers.hit_target(firing, TerrainPiece.Cover.HEAVY), 5, "shared hit modifier")
 
@@ -3626,24 +3436,22 @@ func test_shooting_mixed_terrain_in_main_scene() -> void:
 
 func test_assault_against_squad_in_cover() -> void:
     var attacker := _squad_at(&"p1_a", P1, [Vector2(8.0, 5.0), Vector2(8.0, 6.0)])
-    var target := _squad_at(&"p2_t", P2, [Vector2(9.5, 5.0), Vector2(9.5, 6.0)])
+    var target := _squad_at(&"p2_t", P2, [Vector2(9.0, 5.0), Vector2(9.0, 6.0)])
     target.data.profile.armor_save = 5
-    var f := _morale_fixture([attacker, target], [])
-    f.assault.terrain = _terrain([_piece(_rect_poly(9.0, 0.0, 14.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.HEAVY)])
-    _advance_to(f, Phase.ASSAULT, 1)
-    f.activation.activate(attacker)
-    # Hits on 5+ (heavy): 5, 4. Wound (S3 vs T0, 2+): 6. Save 4+ (5+ in cover): 3 fails.
-    f.assault.dice = ScriptedDice.new([5, 4, 6, 3])
-    var results := []
-    f.assault.assault_resolved.connect(func(r): results.append(r))
-    f.assault.order_assault(attacker, target)
-    var pending: CombatResult = f.assault.allocator.get_pending_result()
+    target.data.profile.leadership = 12  # holds, rather than falling back off the board
+    # Hits on 5+ (heavy): 5, 4. Wound (S3 vs T0, 2+): 6. Save 4+ (5+ in cover):
+    # 3 fails. The defenders strike back in the open: 1, 1 miss.
+    var strike_rolls: Array[int] = [5, 4, 6, 3, 1, 1]
+    var f := _engagement_fixture([attacker, target], strike_rolls)
+    f.engagement.terrain = _terrain([_piece(_rect_poly(9.0, 0.0, 14.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.HEAVY)])
+    _finish_charge_phase(f)
+    var pending: CombatResult = f.allocator.get_pending_result()
     _check_eq([pending.target_cover, pending.hit_target, pending.get_hits()], [TerrainPiece.Cover.HEAVY, 5, 1], "heavy cover in melee")
     _check_eq(pending.model_results[0].save_target, 4, "cover improves the save in melee")
-    f.assault.allocator.allocate_wound(1)
-    _check_eq(results.size(), 1, "assault completes after allocation")
-    _check(target.lost_models_since_morale, "morale-loss tracking intact")
-    _free_morale_fixture(f)
+    f.allocator.allocate_wound(1)
+    _check_eq(f.log.resolved.size(), 1, "the engagement completes after allocation")
+    _check(not target.lost_models_since_morale, "melee casualties leave the ordinary Morale loss flag unset")
+    _free_engagement_fixture(f)
 
 
 func test_unit_profile_resource() -> void:
@@ -3710,7 +3518,8 @@ func test_main_scene_wiring() -> void:
     for i in 3:
         _complete_phase(activation, main.battle, tm)
     if label:
-        _check_eq(label.text, "Turn 2 - Movement", "banner text after a full turn (Morale has no tests yet)")
+        _check_eq(label.text, "Turn 2 - Movement",
+            "banner text after a full turn: Movement, Shooting and Charge (each squad holds); Assault and Consolidation are procedures")
     main.queue_free()
     await process_frame
 
@@ -4327,4 +4136,1439 @@ func test_fallback_is_deterministic() -> void:
         _check(_no_overlaps([broken, block]), "no overlaps")
         _free_morale_fixture(f)
     _check_eq(outcomes[0], outcomes[1], "fall-back gives the same positions and costs whatever the storage order")
+
+
+# --- Task 2.3: six-phase round and procedure phases ---
+
+func test_six_phase_round_names_and_kinds() -> void:
+    _check_eq(TurnManager.Phase.values().map(func(p): return TurnManager.phase_to_string(p)),
+        ["Movement", "Shooting", "Morale", "Charge", "Assault", "Consolidation"], "six phases in order")
+    _check_eq(TurnManager.LAST_PHASE, Phase.CONSOLIDATION, "the round ends after Consolidation")
+    _check(TurnManager.is_procedure_phase(Phase.ASSAULT), "Assault is a procedure phase")
+    _check(TurnManager.is_procedure_phase(Phase.CONSOLIDATION), "Consolidation is a procedure phase")
+    var tm := TurnManager.new()
+    _check(tm.is_procedure(Phase.ASSAULT), "Assault is a procedure phase whether or not a procedure is registered")
+    tm.free()
+    for phase in [Phase.MOVEMENT, Phase.SHOOTING, Phase.MORALE, Phase.CHARGE]:
+        _check(not TurnManager.is_procedure_phase(phase), "%s is activation-driven" % TurnManager.phase_to_string(phase))
+
+
+func test_procedure_phase_waits_for_its_procedure() -> void:
+    var tm := _new_game()
+    var calls := []
+    tm.register_procedure(Phase.CONSOLIDATION, func(): calls.append(tm.current_phase))
+    for i in 4:
+        _play_phase(tm, 1, 1)
+    _check_eq(calls, [Phase.CONSOLIDATION], "the registered procedure starts when Consolidation begins")
+    _check_eq(tm.current_phase, Phase.CONSOLIDATION, "and the phase waits for it")
+    _check_eq(tm.state, TurnManager.State.PROCEDURE_IN_PROGRESS, "procedure in progress")
+    _check_eq(tm.active_player, TurnManager.NO_PLAYER, "no player activates in a procedure phase")
+    print("        (the next 4 errors are expected)")
+    _check(not tm.begin_phase(1, 1), "begin_phase cannot start or end a procedure phase")
+    _check_eq(tm.start_activation(), TurnManager.NO_PLAYER, "no activation can start")
+    _check(not tm.end_activation(), "no activation can end it")
+    _check(not tm.complete_procedure_phase(Phase.ASSAULT), "completing a different phase is refused")
+    _check_eq(tm.current_phase, Phase.CONSOLIDATION, "still in Consolidation")
+    _check(tm.complete_procedure_phase(Phase.CONSOLIDATION), "the procedure completes its own phase")
+    _check_eq([tm.current_phase, tm.turn_number], [Phase.MOVEMENT, 2], "the round ends after Consolidation")
+    print("        (the next error is expected)")
+    _check(not tm.complete_procedure_phase(Phase.CONSOLIDATION), "a procedure phase cannot be completed twice")
+    tm.free()
+
+
+func test_procedure_may_complete_synchronously() -> void:
+    var tm := _new_game()
+    tm.register_procedure(Phase.CONSOLIDATION, func(): tm.complete_procedure_phase(Phase.CONSOLIDATION))
+    var started := []
+    tm.phase_started.connect(func(phase, _t, _p): started.append(phase))
+    for i in 4:
+        _play_phase(tm, 1, 1)
+    _check(Phase.CONSOLIDATION in started, "Consolidation started")
+    _check_eq([tm.current_phase, tm.turn_number], [Phase.MOVEMENT, 2], "a procedure finishing at once ends the round")
+    print("        (the next error is expected)")
+    tm.register_procedure(Phase.MOVEMENT, func(): pass)
+    tm.free()
+
+
+func test_no_squad_activates_in_a_procedure_phase() -> void:
+    var f := _activation_fixture(1, 1)
+    var held := [false]
+    f.tm.register_procedure(Phase.CONSOLIDATION, func(): held[0] = true)
+    for i in 3:
+        _complete_phase(f.activation, f.battle, f.tm)
+    _check(held[0] and f.tm.current_phase == Phase.CONSOLIDATION, "Consolidation is being held by its procedure")
+    for state in f.battle.get_squads():
+        _check_eq(f.activation.can_activate(state), ActivationController.Result.NOT_IN_PHASE,
+            "%s cannot activate in a procedure phase" % state.squad_id)
+    var removed: SquadState = f.battle.get_squads()[0]
+    _check(f.battle.remove_squad(removed.squad_id), "a squad can be removed during a procedure phase")
+    _check_eq(f.tm.state, TurnManager.State.PROCEDURE_IN_PROGRESS, "without disturbing the procedure")
+    f.tm.complete_procedure_phase(Phase.CONSOLIDATION)
+    _check_eq([f.tm.current_phase, f.tm.turn_number], [Phase.MOVEMENT, 2], "then the next round begins")
+    _check_eq(f.tm.get_remaining_activations(removed.get_player()), 0, "the removed squad's player has nothing to activate")
+    _free_activation_fixture(f)
+
+
+# --- Task 2.3 stage 2: morale timing, may_charge, Regroup ---
+
+func test_melee_casualties_do_not_set_morale_flag() -> void:
+    var direct := _squad(&"p2_d", P2, Vector2(30.0, 10.0), 3)
+    direct.take_wound(0, false)
+    _check(not direct.lost_models_since_morale, "take_wound(..., false): no ordinary-test flag")
+    direct.take_wound(1)
+    _check(direct.lost_models_since_morale, "take_wound defaults to counting for Morale")
+    # Through the shared allocator: shooting counts, melee does not.
+    for melee in [false, true]:
+        var target := _squad(&"p2_t", P2, Vector2(30.0, 20.0), 3)
+        var battle := BattleState.new()
+        battle.add_squad(target)
+        var allocator := CasualtyAllocator.new()
+        var tm := TurnManager.new()
+        var activation := ActivationController.new()
+        activation.bind(battle, tm)
+        allocator.bind(activation, battle)
+        var result := CombatResult.new()
+        result.attack_type = CombatResult.AttackType.MELEE if melee else CombatResult.AttackType.RANGED
+        result.target_squad = target
+        var model_result := CombatResult.ModelResult.new()
+        model_result.wounds = 1
+        result.model_results.append(model_result)
+        allocator.begin(result)
+        allocator.allocate_wound(0)
+        _check_eq(target.get_model_count(), 2, "the casualty is applied (%s)" % ("melee" if melee else "shooting"))
+        _check_eq(target.lost_models_since_morale, not melee,
+            "%s casualty %s the ordinary Morale flag" % ["melee" if melee else "shooting", "leaves unset" if melee else "sets"])
+        _check_eq(ActivationController.is_eligible(target, Phase.MORALE), not melee, "and Morale eligibility follows")
+        tm.free()
+        activation.free()
+
+
+func test_shaken_after_shooting_then_broken_after_assault_loss() -> void:
+    var squad := _squad(&"p1_s", P1, Vector2(10.0, 10.0), 4)
+    var enemy := _squad(&"p2_e", P2, Vector2(30.0, 10.0), 1)
+    # Morale test: 6+5 = 11 fails Ld 7; assault-loss test: 6+6 = 12 fails.
+    var f := _morale_fixture([squad, enemy], [6, 5, 6, 6])
+    squad.take_wound(0)  # a shooting casualty
+    _advance_to(f, Phase.MORALE, 1)
+    f.activation.activate(squad)
+    _check_eq(squad.morale_status, SquadState.MoraleStatus.SHAKEN, "ordinary Morale test after shooting: Shaken")
+    _check(not squad.lost_models_since_morale, "that test used up the loss")
+    squad.take_wound(1, false)  # a melee casualty later in the round
+    var result: MoraleResult = f.morale.resolve_assault_loss(squad)
+    _check_eq(result.kind, MoraleResult.Kind.ASSAULT_LOSS, "a separate assault-loss test")
+    _check_eq(squad.morale_status, SquadState.MoraleStatus.BROKEN, "failed: Broken in the same round")
+    _check(not squad.lost_models_since_morale, "the melee casualty sets up no further ordinary test")
+    _check(f.morale.dice.rolls.is_empty(), "exactly two tests were rolled")
+    _free_morale_fixture(f)
+
+
+func test_may_charge_rule() -> void:
+    var squad := _squad(&"p1_s", P1, Vector2(10.0, 10.0), 2)
+    _check(MoraleRules.may_charge(squad), "a Steady, unrestricted squad may charge")
+    squad.morale_status = SquadState.MoraleStatus.SHAKEN
+    _check(not MoraleRules.may_charge(squad), "Shaken: no charge")
+    _check(MoraleRules.may_attack(squad), "although a Shaken squad may still shoot or fight")
+    squad.morale_status = SquadState.MoraleStatus.BROKEN
+    _check(not MoraleRules.may_charge(squad), "Broken: no charge")
+    squad.morale_status = SquadState.MoraleStatus.STEADY
+    squad.morale_restricted_this_turn = true
+    _check(not MoraleRules.may_charge(squad), "Steady but restricted (regrouped or rallied this turn): no charge")
+    var other := _squad(&"p2_o", P2, Vector2(30.0, 10.0), 1)
+    var f := _morale_fixture([squad, other], [])
+    f.tm.turn_started.emit(2)
+    _check(MoraleRules.may_charge(squad), "the restriction lifts at the next round")
+    _free_morale_fixture(f)
+
+
+func test_regroup_keeps_its_behaviour_under_its_new_name() -> void:
+    var probe := MoraleController.new()
+    _check(probe.has_method("regroup"), "MoraleController.regroup exists")
+    _check(not probe.has_method("consolidate"), "the old consolidate action is gone")
+    probe.free()
+    var shaken := _squad(&"p1_s", P1, Vector2(10.0, 10.0), 2)
+    var enemy := _squad(&"p2_e", P2, Vector2(30.0, 10.0), 1)
+    shaken.morale_status = SquadState.MoraleStatus.SHAKEN
+    var f := _morale_fixture([shaken, enemy], [])
+    f.activation.activate(shaken)
+    _check_eq(f.morale.regroup(shaken), MoraleController.RegroupResult.OK, "a Shaken squad regroups in Movement")
+    _check_eq(shaken.morale_status, SquadState.MoraleStatus.STEADY, "Shaken clears")
+    _check_eq(shaken.movement_allowance, 3.0, "half movement, as before")
+    _check(shaken.morale_restricted_this_turn and not MoraleRules.may_attack(shaken), "no shooting or initiating an assault this turn")
+    _check(not MoraleRules.may_charge(shaken), "nor charging")
+    _free_morale_fixture(f)
+    var main: Node = await _load_main()
+    _check_eq(main.hud.activation_panel.regroup_button.text, "Regroup", "the button reads Regroup")
+    main.queue_free()
+    await process_frame
+
+
+# --- Task 2.3 stage 3: contact, engagement grouping, round-long tracker ---
+
+func test_base_contact_threshold() -> void:
+    _check(ModelPlacement.in_base_contact(Vector2(10.0, 10.0), 0.5, Vector2(11.0, 10.0), 0.5), "exact contact")
+    _check(ModelPlacement.in_base_contact(Vector2(10.0, 10.0), 0.5, Vector2(11.001, 10.0), 0.5), "a 0.001 gap is still contact")
+    _check(not ModelPlacement.in_base_contact(Vector2(10.0, 10.0), 0.5, Vector2(11.0012, 10.0), 0.5), "a 0.0012 gap is not")
+    _check(ModelPlacement.ENGAGEMENT_CONTACT > ModelPlacement.CONTACT_TOLERANCE * 10.0,
+        "the contact threshold is a separate rules value, not the float-rounding overlap tolerance")
+    var missed := 0
+    for i in 36:
+        var direction := Vector2.RIGHT.rotated(deg_to_rad(10.0 * i + 0.37))
+        if not ModelPlacement.in_base_contact(Vector2(20.3, 15.7), 0.5, Vector2(20.3, 15.7) + direction, 0.5):
+            missed += 1
+    _check_eq(missed, 0, "exact contact registers at every angle despite rounding")
+    _check(ModelPlacement.in_base_contact(Vector2.ZERO, 0.5, Vector2(1.25, 0.0), 0.75), "different base sizes")
+    # Contact reached by movement registers.
+    var runner := _formation(&"p1_r", P1, [Vector2(10.0, 10.0)])
+    var post := _formation(&"p2_p", P2, [Vector2(14.3, 10.7)])
+    var f := _terrain_move_fixture([runner, post])
+    var contact := post.board_position + (runner.board_position - post.board_position).normalized() * 1.0
+    _check_eq(f.movement.order_move(runner, contact), MovementRules.Result.OK, "move into contact")
+    _check(EngagementRules.squads_in_contact(runner, post), "movement-made contact counts as base contact")
+    _free_fixture(f)
+
+
+func test_contact_pairs_and_friendly_contact() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(11.0, 10.0)])
+    var c := _formation(&"p1_c", P1, [Vector2(12.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(10.0, 11.0)])
+    var pairs := EngagementRules.contact_pairs([x, c, a])
+    _check_eq(pairs.map(func(p): return [p[0].squad_id, p[1].model_id, p[2].squad_id, p[3].model_id]),
+        [[&"p1_a", 0, &"p2_x", 0]], "only enemy contacts are listed, in a fixed order")
+    _check(not EngagementRules.squads_in_contact(a, c), "friendly squads touching are not in contact for engagements")
+    _check(EngagementRules.model_in_enemy_contact(a, a.get_model(0), [a, c, x]), "a model touching an enemy")
+    _check(not EngagementRules.model_in_enemy_contact(a, a.get_model(1), [a, c, x]),
+        "a model touching only friends (and 0.41 from the enemy) is not")
+
+
+func test_engagement_groups_are_connected_contact() -> void:
+    # Chain A-X-B (P1 A,B; P2 X), a separate pair C-Y, and D/Z only near each other.
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(12.0, 10.0)])
+    var c := _formation(&"p1_c", P1, [Vector2(10.0, 20.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(11.0, 20.0)])
+    var d := _formation(&"p1_d", P1, [Vector2(30.0, 10.0)])
+    var z := _formation(&"p2_z", P2, [Vector2(31.5, 10.0)])
+    var friend := _formation(&"p1_f", P1, [Vector2(10.0, 21.0)])
+    var groups := EngagementRules.group([z, y, x, friend, d, c, b, a])
+    _check_eq(groups.map(func(g): return g.squads.map(func(s): return s.squad_id)),
+        [[&"p1_a", &"p1_b", &"p2_x"], [&"p1_c", &"p2_y"]], "connected chains; proximity alone engages nobody")
+    _check(friend not in groups[1].squads, "a friendly squad touching C is not drawn into C's engagement")
+    var reversed := EngagementRules.group([a, b, c, d, friend, x, y, z])
+    _check_eq(reversed.map(func(g): return g.squads.map(func(s): return s.squad_id)),
+        groups.map(func(g): return g.squads.map(func(s): return s.squad_id)), "grouping does not depend on input order")
+
+
+func test_tracker_charges_merges_and_locked_targets() -> void:
+    var tracker := EngagementTracker.new()
+    var first := tracker.record_charge(&"p1_a", &"p2_x")
+    _check(first != null and first.origin == EngagementTracker.Origin.CHARGE, "a successful charge creates a charging engagement")
+    _check_eq(first.members, [&"p2_x", &"p1_a"], "charger and target are both committed")
+    _check_eq([tracker.charge_target_of(&"p1_a"), tracker.attack_target_of(&"p1_a")], [&"p2_x", &"p2_x"],
+        "the charger's declared target is recorded and locks its attack target")
+    _check_eq(tracker.attack_target_of(&"p2_x"), &"", "the defender's attack target is declared later, separately")
+    var second := tracker.record_charge(&"p1_b", &"p2_x")
+    _check(second == first and first.has_member(&"p1_b"), "a second charge on the same target joins that engagement")
+    var other := tracker.record_charge(&"p2_y", &"p1_c")
+    _check(other != first and other.charge_order == 3, "a separate charge makes a separate engagement, third in charge order")
+    print("        (the next 3 errors are expected)")
+    _check(tracker.record_charge(&"p1_a", &"p2_z") == null, "a committed squad cannot charge again this round")
+    _check(not tracker.set_attack_target(&"p1_a", &"p1_b"), "a charger cannot be retargeted, even within its engagement")
+    _check(not tracker.set_attack_target(&"p2_x", &"p1_c"), "a target outside the squad's engagement is refused")
+    _check(tracker.set_attack_target(&"p2_x", &"p1_b"), "a defender may declare any enemy in its engagement")
+    var bridge := tracker.commit([&"p1_c", &"p2_x"])
+    _check(bridge == first and tracker.get_engagements().size() == 1, "an explicit commit spanning two engagements merges them")
+    _check_eq(bridge.charge_order, 1, "the merged engagement keeps the earliest charge order")
+    _check(bridge.has_member(&"p2_y") and bridge.has_member(&"p1_c"), "every member of both is in it")
+    _check_eq(tracker.attack_target_of(&"p2_y"), &"p1_c", "a merge keeps locked targets")
+    var ongoing := EngagementTracker.new()
+    var held := ongoing.commit([&"p1_a", &"p2_x"])
+    _check_eq(held.origin, EngagementTracker.Origin.ONGOING, "an engagement from earlier contact is ongoing")
+    ongoing.record_charge(&"p1_b", &"p2_x")
+    _check_eq([held.origin, held.charge_order], [EngagementTracker.Origin.CHARGE, 1],
+        "charging into an ongoing engagement joins it and makes it a charging engagement")
+
+
+func test_tracker_commitment_is_independent_of_contact() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(20.0, 10.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(21.0, 10.0)])
+    var tracker := EngagementTracker.new()
+    var e1 := tracker.commit([&"p1_a", &"p2_x"])
+    tracker.commit([&"p1_b", &"p2_y"])
+    a.board_position = Vector2(5.0, 5.0)
+    var groups := EngagementRules.group([a, b, x, y], tracker)
+    _check_eq(groups.map(func(g): return g.squads.map(func(s): return s.squad_id)), [[&"p1_a", &"p2_x"], [&"p1_b", &"p2_y"]],
+        "A stays grouped with X after moving out of contact: commitment, not geometry")
+    _check(tracker.engagement_of(&"p1_a") == e1, "and its commitment is unchanged")
+    # Contact between two committed engagements does not merge them.
+    y.board_position = Vector2(12.0, 10.0)
+    _check(EngagementRules.squads_in_contact(x, y) == false and EngagementRules.squads_in_contact(y, x) == false,
+        "(X and Y are both P2: no enemy contact)")
+    b.board_position = Vector2(11.0, 11.0)
+    _check(EngagementRules.squads_in_contact(b, x), "B now touches X, from the other engagement")
+    groups = EngagementRules.group([a, b, x, y], tracker)
+    _check_eq(groups.size(), 2, "contact across two committed engagements does not merge them by itself")
+    _check_eq(tracker.get_engagements().size(), 2, "the tracker is untouched by grouping")
+    # An uncommitted squad bridging both is proposed as one group spanning both.
+    var c := _formation(&"p1_c", P1, [Vector2(30.0, 10.0)])
+    var bridge_tracker := EngagementTracker.new()
+    var bx := _formation(&"p2_bx", P2, [Vector2(31.0, 10.0)])
+    var by := _formation(&"p2_by", P2, [Vector2(30.0, 11.0)])
+    var p := _formation(&"p1_p", P1, [Vector2(32.0, 10.0)])
+    var q := _formation(&"p1_q", P1, [Vector2(30.0, 12.0)])
+    bridge_tracker.commit([&"p1_p", &"p2_bx"])
+    bridge_tracker.commit([&"p1_q", &"p2_by"])
+    var proposed := EngagementRules.group([c, bx, by, p, q], bridge_tracker)
+    _check_eq(proposed.size(), 1, "an uncommitted squad touching both proposes one combined group")
+    _check_eq(proposed[0].engagements, [1, 2], "naming both engagements it would merge")
+    _check_eq(bridge_tracker.get_engagements().size(), 2, "still only a proposal: nothing merged until committed")
+
+
+func test_destroyed_and_resolved_squads_in_the_record() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    var c := _formation(&"p1_c", P1, [Vector2(12.0, 10.0)])
+    var w := _formation(&"p2_w", P2, [Vector2(9.0, 10.0)])
+    var battle := BattleState.new()
+    for s in [a, x, c, w]:
+        battle.add_squad(s)
+    var tracker := EngagementTracker.new()
+    var engagement := tracker.commit([&"p1_a", &"p2_x"])
+    x.take_wound(0, false)
+    battle.remove_squad(&"p2_x")
+    _check(tracker.engagement_of(&"p2_x") == engagement and engagement.has_member(&"p2_x"),
+        "a destroyed squad stays recorded as committed for the round")
+    tracker.mark_resolved(engagement)
+    var groups := EngagementRules.group(battle.get_squads(), tracker)
+    _check(groups.is_empty(), "squads of a resolved engagement take no further part this round, though W touches A")
+    print("        (the next error is expected)")
+    _check(tracker.commit([&"p1_c", &"p1_a"]) == null, "nobody can be committed into a resolved engagement")
+    var tm := TurnManager.new()
+    tracker.bind(tm)
+    tm.start_game()
+    _check(tracker.get_engagements().is_empty() and not tracker.is_committed(&"p1_a") and not tracker.is_committed(&"p2_x"),
+        "the record resets when a round starts")
+    _check_eq(tracker.round_number, 1, "for the new round")
+    var next_round := EngagementRules.group(battle.get_squads(), tracker)
+    _check_eq(next_round.map(func(g): return g.squads.map(func(s): return s.squad_id)), [[&"p1_a", &"p2_w"]],
+        "next round, A and W's contact is an ongoing engagement; friendly C does not join it")
+    tm.free()
+
+
+func test_main_owns_a_round_long_tracker() -> void:
+    var main: Node = await _load_main()
+    _check(main.engagements is EngagementTracker, "Main owns the engagement tracker")
+    _check_eq(main.engagements.round_number, 1, "bound to the turn manager: reset for round 1")
+    main.queue_free()
+    await process_frame
+
+
+# --- Task 2.3 stage 4: Charge phase ---
+
+## A battle advanced to the Charge phase, with a ChargeController whose dice
+## are scripted. Free with _free_charge_fixture.
+func _charge_fixture(squads: Array, rolls: Array[int] = [], terrain: TerrainMap = null, before_start := Callable()) -> Dictionary:
+    var battle := BattleState.new()
+    for squad in squads:
+        battle.add_squad(squad)
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var tracker := EngagementTracker.new()
+    tracker.bind(tm)
+    var charge := ChargeController.new()
+    charge.bind(tm, activation, battle, tracker, Vector2(48.0, 32.0))
+    charge.terrain = terrain
+    charge.dice = ScriptedDice.new(rolls)
+    var movement := MovementController.new()
+    movement.bind(battle, tm, Vector2(48.0, 32.0))
+    movement.activation = activation
+    movement.terrain = terrain
+    var f := {"battle": battle, "tm": tm, "activation": activation, "tracker": tracker, "charge": charge, "movement": movement}
+    if before_start.is_valid():
+        before_start.call(f)
+    tm.start_game()
+    _complete_phase(activation, battle, tm)
+    _complete_phase(activation, battle, tm)
+    return f
+
+
+func _free_charge_fixture(f: Dictionary) -> void:
+    for key in ["tm", "activation", "charge", "movement"]:
+        f[key].free()
+
+
+## Activates `squad` in the current phase, first letting squads of the player
+## whose turn it is hold (activate and end) until `squad`'s player may act.
+func _activate_squad(f: Dictionary, squad: SquadState) -> bool:
+    for i in 12:
+        if f.activation.can_activate(squad) == ActivationController.Result.OK:
+            f.activation.activate(squad)
+            return true
+        var other: SquadState = null
+        for state in f.battle.get_squads():
+            if state != squad and f.activation.can_activate(state) == ActivationController.Result.OK:
+                other = state
+                break
+        if other == null:
+            return false
+        f.activation.activate(other)
+        f.activation.end_activation()
+    return false
+
+
+func test_charge_eligibility() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 5.0)])
+    var shaken := _formation(&"p1_s", P1, [Vector2(10.0, 10.0)])
+    var regrouped := _formation(&"p1_r", P1, [Vector2(10.0, 15.0)])
+    var engaged := _formation(&"p1_e", P1, [Vector2(10.0, 25.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(30.0, 5.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(11.0, 25.0)])
+    shaken.morale_status = SquadState.MoraleStatus.SHAKEN
+    regrouped.morale_restricted_this_turn = true
+    var f := _charge_fixture([a, shaken, regrouped, engaged, x, y])
+    _check_eq(f.tm.current_phase, Phase.CHARGE, "in the Charge phase")
+    _check_eq([f.tm.get_remaining_activations(P1), f.tm.get_remaining_activations(P2)], [1, 1],
+        "only A and X may declare: Shaken, restricted and already-engaged squads may not")
+    for squad in [shaken, regrouped, engaged, y]:
+        _check(not f.activation.is_squad_eligible(squad, Phase.CHARGE), "%s cannot charge" % squad.squad_id)
+    var broken := _formation(&"p1_b", P1, [Vector2(40.0, 30.0)])
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    _check(not ChargeRules.can_declare_any(broken, f.battle.get_squads(), f.tracker), "a Broken squad cannot charge")
+    _check(ChargeRules.can_declare_any(a, f.battle.get_squads(), f.tracker), "a Steady, unengaged squad can")
+    _free_charge_fixture(f)
+
+
+func test_charge_phase_alternates_activations() -> void:
+    var squads := [_formation(&"p1_a", P1, [Vector2(5.0, 5.0)]), _formation(&"p1_b", P1, [Vector2(5.0, 9.0)]),
+        _formation(&"p2_x", P2, [Vector2(40.0, 5.0)]), _formation(&"p2_y", P2, [Vector2(40.0, 9.0)])]
+    var f := _charge_fixture(squads)
+    var order := []
+    for i in 4:
+        order.append(f.activation.get_active_player())
+        var next: SquadState = null
+        for state in f.battle.get_squads():
+            if f.activation.can_activate(state) == ActivationController.Result.OK:
+                next = state
+                break
+        f.activation.activate(next)
+        f.activation.end_activation()
+    _check_eq(order, [P1, P2, P1, P2], "players alternate Charge activations, priority first")
+    _check_eq([f.tm.current_phase, f.tm.turn_number], [Phase.MOVEMENT, 2],
+        "the phase ends once every eligible squad has activated (Assault and Consolidation have nothing to do)")
+    _free_charge_fixture(f)
+
+
+func test_charge_declaration_checks() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var friend := _formation(&"p1_f", P1, [Vector2(10.0, 20.0)])
+    var near := _formation(&"p2_n", P2, [Vector2(23.0, 10.0)])
+    var far := _formation(&"p2_far", P2, [Vector2(23.01, 20.0)])
+    var f := _charge_fixture([a, friend, near, far], [6])
+    _check_eq(f.charge.declare_charge(a, near), ChargeRules.Result.NOT_ACTIVATED, "only the activated squad may declare")
+    _activate_squad(f, a)
+    _check_eq(f.charge.declare_charge(a, friend), ChargeRules.Result.OWN_SQUAD, "not a friendly squad")
+    _check_eq(f.charge.declare_charge(a, null), ChargeRules.Result.NO_TARGET, "a target is required")
+    _check_eq(f.charge.declare_charge(a, far), ChargeRules.Result.OUT_OF_RANGE,
+        "beyond M + 6 (12.01 edge to edge from every model) is refused")
+    _check(f.activation.is_active_squad(a) and f.charge.dice.rolls.size() == 1,
+        "refused declarations neither spend the activation nor roll")
+    _check_eq(a.board_position, Vector2(10.0, 10.0), "nor move anything")
+    _check_eq(f.charge.declare_charge(a, near), ChargeRules.Result.OK, "exactly M + 6 away may be declared")
+    _check(f.charge.last_result.succeeded, "and a 6 reaches it exactly")
+    _check(f.activation.has_activated(a) and not f.activation.is_active_squad(a), "an accepted declaration spends the activation")
+    _free_charge_fixture(f)
+
+
+func test_charge_roll_distance_and_fresh_allowance() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(22.0, 10.0)])
+    var battle_rolls: Array[int] = [3]
+    var f := _charge_fixture([a, x], battle_rolls)
+    a.get_model(0).movement_used = 6.0
+    a.get_model(1).movement_used = 6.0
+    a.movement_complete = true
+    var starts := a.get_living_models().map(func(m): return m.position)
+    _activate_squad(f, a)
+    _check_eq(f.charge.declare_charge(a, x), ChargeRules.Result.OK, "declared")
+    var result: ChargeResult = f.charge.last_result
+    _check_eq([result.roll, result.distance], [3, 9.0], "one D6 for the squad: M 6 + 3 = 9")
+    _check(f.charge.dice.rolls.is_empty(), "exactly one die rolled")
+    var leader_moved: float = a.get_model(0).position.distance_to(starts[0])
+    _check(absf(leader_moved - 9.0) < 0.001, "the unobstructed leader moves its full 9 despite a spent Movement allowance: %.4f" % leader_moved)
+    for model in a.get_living_models():
+        var moved: float = model.position.distance_to(starts[model.model_id])
+        _check(moved <= 9.0 + 0.001, "model %d moves no further than 9: %.4f" % [model.model_id, moved])
+        _check_eq(model.movement_used, 6.0, "and the charge did not touch its Movement accounting")
+    _check(not result.succeeded, "11 away (within the M + 6 limit) but a roll of 3: the charge fails")
+    _check(not f.tracker.is_committed(&"p1_a") and not f.tracker.is_committed(&"p2_x"), "a failed charge commits nobody")
+    _check(f.activation.has_activated(a), "but still spends the activation")
+    _free_charge_fixture(f)
+
+
+func test_successful_charge_commits_and_locks_target() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(19.0, 10.0), Vector2(19.0, 11.0)])
+    var spare := _formation(&"p2_s", P2, [Vector2(40.0, 30.0)])
+    var spare2 := _formation(&"p2_t", P2, [Vector2(44.0, 30.0)])
+    var f := _charge_fixture([a, spare, x, spare2], [4])
+    _check(_activate_squad(f, a), "A activates")
+    var p2_waiting: int = f.tm.get_remaining_activations(P2)
+    _check_eq(f.charge.declare_charge(a, x), ChargeRules.Result.OK, "declared")
+    var result: ChargeResult = f.charge.last_result
+    _check(result.succeeded and result.models_in_contact >= 1, "contact with the declared target: success")
+    _check(EngagementRules.squads_in_contact(a, x), "the squads are in base contact")
+    var engagement: EngagementTracker.Engagement = f.tracker.engagement_of(&"p1_a")
+    _check(engagement != null and engagement == f.tracker.engagement_of(&"p2_x"), "charger and target committed to one engagement")
+    _check_eq(engagement.origin, EngagementTracker.Origin.CHARGE, "a charging engagement")
+    _check_eq([f.tracker.charge_target_of(&"p1_a"), f.tracker.attack_target_of(&"p1_a")], [&"p2_x", &"p2_x"], "target locked")
+    _check_eq(f.tm.get_remaining_activations(P2), p2_waiting - 1, "the charged squad loses its waiting Charge activation")
+    _check_eq(f.activation.can_activate(x), ActivationController.Result.NOT_ELIGIBLE, "and cannot declare a charge of its own")
+    _check(_no_overlaps(f.battle.get_squads()), "no overlaps")
+    _free_charge_fixture(f)
+
+
+func test_charge_models_head_for_their_fixed_nearest_target_model() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 8.0), Vector2(10.0, 14.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(16.0, 8.0), Vector2(16.0, 14.0)])
+    _check_eq(ChargeRules.nearest_target_model(a.get_model(0), x), x.get_model(0), "upper model's nearest is X0")
+    _check_eq(ChargeRules.nearest_target_model(a.get_model(1), x), x.get_model(1), "lower model's nearest is X1")
+    var tie := _formation(&"p2_t", P2, [Vector2(13.0, 5.0), Vector2(13.0, 11.0)])
+    _check_eq(ChargeRules.nearest_target_model(a.get_model(0), tie), tie.get_model(0), "an exact tie goes to the lower model_id")
+    var f := _charge_fixture([a, x], [6])
+    _activate_squad(f, a)
+    f.charge.declare_charge(a, x)
+    _check(ModelPlacement.models_in_contact(a.get_model(0), x.get_model(0)), "A0 ends on X0")
+    _check(ModelPlacement.models_in_contact(a.get_model(1), x.get_model(1)), "A1 ends on X1")
+    _free_charge_fixture(f)
+
+
+func test_charge_difficult_terrain_doubles() -> void:
+    var mud := _terrain([_piece(_rect_poly(12.0, 0.0, 16.0, 30.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)])
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(20.0, 10.0)])
+    var f := _charge_fixture([a, x], [3], mud)
+    _activate_squad(f, a)
+    f.charge.declare_charge(a, x)
+    _check(not f.charge.last_result.succeeded, "9 would reach contact in the open, but 4 of mud costs 8")
+    _check(a.board_position.distance_to(Vector2(15.5, 10.0)) < 0.001,
+        "2 to the mud, then 3.5 inside it for the remaining 7: %s" % a.board_position)
+    _free_charge_fixture(f)
+
+
+func test_charge_respects_impassable_terrain_board_and_collision() -> void:
+    var wall := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(14.0, 0.0, 14.5, 30.0))])
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(10.0, 11.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(18.0, 10.0)])
+    var f := _charge_fixture([a, x], [6], wall)
+    _activate_squad(f, a)
+    f.charge.declare_charge(a, x)
+    _check(not f.charge.last_result.succeeded, "a full-height wall blocks the charge")
+    _check(ModelPlacement.layout_errors(f.battle.get_squads(), Vector2(48.0, 32.0), wall).is_empty(),
+        "no base overlaps the wall, another base, or the board edge")
+    _check(a.get_model(0).position.x <= 13.5 + 0.0001, "the charger stops at the wall: %s" % a.get_model(0).position)
+    _free_charge_fixture(f)
+    var edge := _formation(&"p1_e", P1, [Vector2(1.0, 30.0), Vector2(3.0, 30.0)])
+    var target := _formation(&"p2_t", P2, [Vector2(1.0, 20.0)])
+    var g := _charge_fixture([edge, target], [6])
+    _activate_squad(g, edge)
+    g.charge.declare_charge(edge, target)
+    for model in edge.get_living_models():
+        _check(ModelPlacement.base_on_board(model.position, 0.5, Vector2(48.0, 32.0)), "every base stays on the board")
+    _check(_no_overlaps(g.battle.get_squads()), "charging models crowding one target never overlap")
+    _free_charge_fixture(g)
+
+
+func test_charge_never_touches_a_non_target_enemy() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var screen := _formation(&"p2_z", P2, [Vector2(14.0, 10.3)])
+    var x := _formation(&"p2_x", P2, [Vector2(18.0, 10.0)])
+    var worst := [INF]
+    var observer := func(positions: Dictionary) -> void:
+        worst[0] = minf(worst[0], positions[0].distance_to(screen.board_position) - 1.0)
+    SquadMover.plan_charge(a, x, 12.0, [a, screen, x], null, Vector2(48.0, 32.0), observer)
+    _check(worst[0] > ModelPlacement.ENGAGEMENT_CONTACT + ModelPlacement.CONTACT_TOLERANCE,
+        "at no step does the charger come within contact range of the screening enemy: closest gap %.5f" % worst[0])
+    var f := _charge_fixture([a, screen, x], [6])
+    _activate_squad(f, a)
+    f.charge.declare_charge(a, x)
+    _check(not EngagementRules.squads_in_contact(a, screen), "the charge ends without touching the screen")
+    _check(not f.tracker.is_committed(&"p2_z"), "and the screen is not drawn into any engagement")
+    _check(f.charge.last_result.succeeded, "the charger slides past it and still reaches its target")
+    _free_charge_fixture(f)
+    # A non-target squad already in another engagement is never merged in.
+    var b := _formation(&"p1_b", P1, [Vector2(10.0, 20.0)])
+    var busy := _formation(&"p2_busy", P2, [Vector2(16.0, 20.0)])
+    var holder := _formation(&"p1_h", P1, [Vector2(17.0, 20.0)])
+    var t := _formation(&"p2_t", P2, [Vector2(16.0, 22.5)])
+    var g := _charge_fixture([b, busy, holder, t, _formation(&"p1_zz", P1, [Vector2(1.0, 31.0)]),
+        _formation(&"p2_zz", P2, [Vector2(47.0, 31.0)])], [6])  # reserves keep the Charge phase open
+    var before: int = g.tracker.get_engagements().size()
+    _activate_squad(g, b)
+    g.charge.declare_charge(b, t)
+    _check(not EngagementRules.squads_in_contact(b, busy), "the charger keeps clear of the other engagement's squad")
+    _check(g.tracker.engagement_of(&"p2_busy") == null or not g.tracker.engagement_of(&"p2_busy").has_member(&"p1_b"),
+        "and no engagement is merged by incidental contact")
+    _check_eq(g.tracker.get_engagements().size(), before + (1 if g.charge.last_result.succeeded else 0), "only the declared charge commits")
+    _free_charge_fixture(g)
+
+
+func test_charge_into_an_existing_engagement_joins_it() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(10.0, 14.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(16.0, 12.0), Vector2(16.0, 11.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(40.0, 30.0)])
+    var f := _charge_fixture([a, b, x, y, _formation(&"p1_zz", P1, [Vector2(1.0, 31.0)])], [6, 6])  # a reserve keeps the phase open
+    _activate_squad(f, a)
+    f.charge.declare_charge(a, x)
+    var engagement: EngagementTracker.Engagement = f.tracker.engagement_of(&"p2_x")
+    _check(engagement != null, "A's charge engages X")
+    _activate_squad(f, b)
+    _check_eq(f.charge.declare_charge(b, x), ChargeRules.Result.OK, "B may charge X, already in an engagement")
+    _check(f.charge.last_result.succeeded, "B reaches X")
+    _check(f.tracker.engagement_of(&"p1_b") == engagement and engagement.members.size() == 3, "B joins the same engagement")
+    _check_eq(engagement.charge_order, 1, "which keeps its original charge order")
+    _check_eq(f.tracker.attack_target_of(&"p1_b"), &"p2_x", "B is locked to X")
+    _free_charge_fixture(f)
+
+
+func test_engaged_squads_cannot_charge() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(16.0, 10.0)])
+    var other := _formation(&"p2_o", P2, [Vector2(20.0, 20.0)])
+    var f := _charge_fixture([a, x, other], [6])
+    _activate_squad(f, a)
+    f.charge.declare_charge(a, x)
+    _check(f.tracker.is_committed(&"p1_a"), "A charged")
+    _check_eq(ChargeRules.validate(a, other, Phase.CHARGE, true, f.battle.get_squads(), f.tracker),
+        ChargeRules.Result.ALREADY_ENGAGED, "a committed squad cannot declare another charge this round")
+    var in_contact := _formation(&"p1_c", P1, [Vector2(30.0, 5.0)])
+    var touching := _formation(&"p2_t", P2, [Vector2(31.0, 5.0)])
+    _check_eq(ChargeRules.validate(in_contact, other, Phase.CHARGE, true, [in_contact, touching, other], f.tracker),
+        ChargeRules.Result.ALREADY_ENGAGED, "a squad already in base contact (an ongoing engagement) cannot charge")
+    _free_charge_fixture(f)
+
+
+func test_charge_is_deterministic() -> void:
+    var outcomes := []
+    for reverse in [false, true]:
+        var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(9.0, 11.0), Vector2(11.0, 11.0), Vector2(10.0, 12.0)])
+        var x := _formation(&"p2_x", P2, [Vector2(17.0, 11.0), Vector2(17.0, 12.0)])
+        var z := _formation(&"p2_z", P2, [Vector2(14.0, 13.5)])
+        if reverse:
+            a._models.reverse()
+            x._models.reverse()
+        var f := _charge_fixture([z, x, a] if reverse else [a, x, z], [5])
+        _activate_squad(f, a)
+        f.charge.declare_charge(a, x)
+        outcomes.append([a.get_living_models().map(func(m): return [m.model_id, m.position]), f.charge.last_result.succeeded])
+        _check(_no_overlaps(f.battle.get_squads()), "no overlaps")
+        _free_charge_fixture(f)
+    _check_eq(outcomes[0], outcomes[1], "the same charge gives the same result whatever the storage order")
+
+
+func test_charge_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    raider.board_position = Vector2(21.0, 16.0)
+    main.charge.dice = ScriptedDice.new([6])
+    for i in 2:
+        _complete_phase(main.activation, main.battle, main.turn_manager)
+    _check_eq(main.turn_manager.current_phase, Phase.CHARGE, "Charge phase")
+    main.activation.activate(line)
+    main._on_squad_right_clicked(main.battle.get_squad(&"p1_line_squad"), Vector2.ZERO)
+    _check_eq(main.hud.order_feedback.text, "Cannot charge your own squad", "own squad refused with feedback")
+    var reports := []
+    main.charge.charge_resolved.connect(func(r): reports.append(HUD.format_charge_result(r)))
+    var started := []
+    main.engagement.engagement_started.connect(func(_e, squads): started.append(squads.map(func(s): return s.squad_id)))
+    main._on_squad_right_clicked(raider, raider.board_position)
+    _check(not reports.is_empty() and reports[0].begins_with("Line Squad charges Raider Squad\nRolled 6: up to 12"),
+        "the HUD's charge report: %s" % [reports])
+    _check(main.charge.last_result.succeeded and reports[0].contains("engaged"), "a successful charge")
+    _check_eq(started, [[&"p1_line_squad", &"p2_raider_squad"]],
+        "the charged Raiders lose their activation, so the Assault procedure starts at once with the charge's engagement")
+    main.queue_free()
+    await process_frame
+
+
+# --- Task 2.3 stage 5: casualty allocation queue ---
+
+## A rolled melee strike by `attacker` on `target` with `unsaved` unsaved
+## wounds (its dice are irrelevant to allocation).
+func _strike(attacker: SquadState, target: SquadState, unsaved: int) -> CombatResult:
+    var result := CombatResult.new()
+    result.attack_type = CombatResult.AttackType.MELEE
+    result.attacker_squad = attacker
+    result.target_squad = target
+    var model := CombatResult.ModelResult.new()
+    model.model_name = "striker"
+    model.eligibility = CombatResult.Eligibility.ELIGIBLE
+    model.hits = unsaved
+    model.wounds = unsaved
+    result.model_results.append(model)
+    return result
+
+
+## A battle in an activation phase with a CountingActivation and an allocator.
+func _queue_fixture(squads: Array) -> Dictionary:
+    var battle := BattleState.new()
+    for squad in squads:
+        battle.add_squad(squad)
+    var tm := TurnManager.new()
+    var activation := CountingActivation.new()
+    activation.bind(battle, tm)
+    var allocator := CasualtyAllocator.new()
+    allocator.bind(activation, battle)
+    tm.start_game()
+    var log := {"prompts": [], "strikes": [], "queues": [], "resolved": []}
+    allocator.allocation_required.connect(func(r, left): log.prompts.append([r.describe_strike(), r.get_allocating_player(), left]))
+    allocator.strike_allocated.connect(func(r): log.strikes.append(r.strike_index))
+    allocator.queue_resolved.connect(func(rs): log.queues.append(rs.size()))
+    allocator.resolved.connect(func(r): log.resolved.append(r))
+    return {"battle": battle, "tm": tm, "activation": activation, "allocator": allocator, "log": log}
+
+
+func _free_queue_fixture(f: Dictionary) -> void:
+    f.tm.free()
+    f.activation.free()
+
+
+func test_allocation_queue_runs_each_strike_by_its_defender() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(11.0, 10.0), Vector2(12.0, 10.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(10.0, 14.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(10.0, 11.0), Vector2(11.0, 11.0), Vector2(12.0, 11.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(10.0, 15.0)])
+    var f := _queue_fixture([a, b, x, y])
+    f.activation.activate(a)
+    var strikes: Array[CombatResult] = [_strike(a, x, 2), _strike(x, a, 1), _strike(b, y, 0), _strike(y, a, 1)]
+    _check(f.allocator.enqueue(strikes), "the queue starts")
+    _check_eq([a.get_model_count(), x.get_model_count()], [3, 3], "no casualty is applied until the defender allocates it")
+    _check_eq(f.log.prompts, [["p1_a's strike on p2_x (1 of 4)", P2, 2]],
+        "the first prompt: Player 2 allocates the 2 wounds from A's strike on X")
+    f.allocator.allocate_wound(0)
+    f.allocator.allocate_wound(1)
+    _check_eq(x.get_model_count(), 1, "X's two casualties applied")
+    _check_eq(f.log.prompts.back(), ["p2_x's strike on p1_a (2 of 4)", P1, 1], "next, Player 1 allocates X's strike on A")
+    f.allocator.allocate_wound(2)
+    _check_eq(f.log.prompts.back(), ["p2_y's strike on p1_a (4 of 4)", P1, 1],
+        "B's strike on Y had no unsaved wounds: no prompt, straight on to Y's strike")
+    f.allocator.allocate_wound(1)
+    _check_eq(f.log.strikes, [1, 2, 3, 4], "every strike is finished, in order")
+    _check_eq(f.log.queues, [4], "the queue resolves once, with all four strikes")
+    _check(f.log.resolved.is_empty(), "queue mode never emits the single-attack resolved signal")
+    _check(not f.allocator.is_pending(), "nothing left pending")
+    _check(f.activation.is_active_squad(a) and f.activation.end_calls == 0 and not f.activation.locked,
+        "the queue neither locks nor ends any activation")
+    _check(not a.lost_models_since_morale and not x.lost_models_since_morale, "melee casualties: no ordinary Morale flag")
+    _check_eq([strikes[0].models_remaining, strikes[1].models_remaining, strikes[3].models_remaining], [1, 2, 1],
+        "each strike records its target's survivors when it was allocated")
+    _free_queue_fixture(f)
+
+
+func test_allocation_queue_handles_destroyed_targets() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(11.0, 10.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(12.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 11.0)])
+    var f := _queue_fixture([a, b, x])
+    var removed := []
+    f.battle.squad_removed.connect(func(s): removed.append(s.squad_id))
+    var strikes: Array[CombatResult] = [_strike(a, x, 2), _strike(b, x, 1), _strike(x, a, 1)]
+    f.allocator.enqueue(strikes)
+    f.allocator.allocate_wound(0)
+    _check(x.is_destroyed(), "X falls to the first wound of A's strike")
+    _check_eq([strikes[0].wasted_wounds, strikes[0].target_destroyed], [1, true], "A's second wound is wasted")
+    _check_eq(strikes[1].wasted_wounds, 1, "B's strike on the destroyed X is skipped: its wound is wasted")
+    _check_eq(f.log.prompts.back(), ["p2_x's strike on p1_a (3 of 3)", P1, 1],
+        "X's own strike, rolled before it fell, still has to be allocated")
+    _check(removed.is_empty() and f.battle.get_squad(&"p2_x") == x, "a destroyed squad stays in the battle until the queue ends")
+    _check_eq(f.allocator.allocate_wound(1), DamageRules.AllocationResult.OK, "Player 1 allocates it")
+    _check_eq(removed, [&"p2_x"], "then the destroyed squad is removed, once")
+    _check_eq(f.log.queues, [3], "and the queue resolves")
+    _free_queue_fixture(f)
+
+
+func test_allocation_queue_guards() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0), Vector2(12.0, 10.0)])
+    var f := _queue_fixture([a, x])
+    var empty: Array[CombatResult] = []
+    _check(f.allocator.enqueue(empty) and f.log.queues == [0], "an empty queue resolves at once")
+    var quiet: Array[CombatResult] = [_strike(a, x, 0), _strike(x, a, 0)]
+    f.allocator.enqueue(quiet)
+    _check(f.log.prompts.is_empty() and f.log.queues == [0, 2], "strikes with nothing to allocate finish without prompts")
+    var pending: Array[CombatResult] = [_strike(a, x, 1)]
+    f.allocator.enqueue(pending)
+    _check(f.allocator.is_pending() and f.allocator.is_queue_active(), "a strike awaits allocation")
+    print("        (the next error is expected)")
+    _check(not f.allocator.enqueue(quiet), "a second queue is refused while one is pending")
+    var shooting := ShootingController.new()
+    shooting.bind(f.tm, f.activation, f.battle, f.allocator)
+    _check_eq(shooting.order_shot(a, x), ShootingRules.OrderResult.ALLOCATION_PENDING, "no shooting while a queue is pending")
+    _check_eq(f.allocator.allocate_wound(7), DamageRules.AllocationResult.UNKNOWN_MODEL, "invalid allocations are refused as before")
+    f.allocator.allocate_wound(0)
+    _check(not f.allocator.is_pending(), "done")
+    shooting.free()
+    _free_queue_fixture(f)
+
+
+func test_allocation_panel_identifies_the_strike() -> void:
+    var main: Node = await _load_main()
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    var strikes: Array[CombatResult] = [_strike(line, raider, 1), _strike(raider, line, 2)]
+    main.casualties.enqueue(strikes)
+    var panel: AllocationPanel = main.hud.allocation_panel
+    _check(panel.visible, "the allocation panel opens")
+    _check_eq(panel.title_label.text, "Player 2: allocate 1 wound to Raider Squad\nfrom Line Squad's strike on Raider Squad (1 of 2)",
+        "it names the allocating player, the attacker, the target and the strike")
+    panel.get_button(raider.get_living_models()[0].model_id).pressed.emit()
+    _check_eq(panel.title_label.text, "Player 1: allocate 2 wounds to Line Squad\nfrom Raider Squad's strike on Line Squad (2 of 2)",
+        "then the other player allocates the next strike")
+    panel.get_button(line.get_living_models()[1].model_id).pressed.emit()
+    panel.get_button(line.get_living_models()[1].model_id).pressed.emit()
+    _check(not panel.visible, "closed once the queue is done")
+    _check_eq(main.turn_manager.current_phase, Phase.MOVEMENT, "no activation or phase was ended by the queue")
+    main.queue_free()
+    await process_frame
+
+
+# --- Task 2.3 stage 6: Assault procedure, declarations, simultaneous strikes ---
+
+## A battle with charge and engagement controllers bound, advanced to the
+## Charge phase. Strike dice are `strike_rolls` (scripted) or a seeded roller.
+func _engagement_fixture(squads: Array, strike_rolls: Array[int] = [], seeded := false, morale_rolls: Array[int] = [],
+        with_consolidation := false) -> Dictionary:
+    var log := {"started": [], "asked": [], "rolled": [], "fought": [], "prompts": [], "resolved": []}
+    var bind_engagement := func(f: Dictionary) -> void:
+        var allocator := CasualtyAllocator.new()
+        allocator.bind(f.activation, f.battle)
+        var engagement := EngagementController.new()
+        engagement.bind(f.tm, f.battle, f.tracker, allocator)
+        engagement.dice = DiceRoller.new(11) if seeded else ScriptedDice.new(strike_rolls)
+        f["allocator"] = allocator
+        f["engagement"] = engagement
+        var morale := MoraleController.new()
+        morale.bind(f.battle, f.tm, f.activation, Vector2(48.0, 32.0))
+        morale.dice = ScriptedDice.new(morale_rolls) if not morale_rolls.is_empty() else DiceRoller.new(5)
+        engagement.morale = morale
+        f["morale"] = morale
+        engagement.engagement_resolved.connect(func(o): log.resolved.append(o))
+        if with_consolidation:
+            var consolidation := ConsolidationController.new()
+            consolidation.bind(f.tm, f.battle, f.tracker, engagement, Vector2(48.0, 32.0))
+            f["consolidation"] = consolidation
+        engagement.engagement_started.connect(func(e, sq): log.started.append(sq.map(func(s): return s.squad_id)))
+        engagement.target_declaration_required.connect(func(sq, _o): log.asked.append(sq.squad_id))
+        engagement.strikes_rolled.connect(func(_e, rs): log.rolled.append(rs.map(func(r): return [r.attacker_squad.squad_id, r.target_squad.squad_id])))
+        engagement.engagement_fought.connect(func(e, _rs): log.fought.append(e.id))
+        allocator.allocation_required.connect(func(r, left): log.prompts.append([r.describe_strike(), r.get_allocating_player(), left]))
+    # A far-off reserve per player keeps the Charge phase open (each can still
+    # declare) until the test ends it, so set-up happens before Assault.
+    var all := squads.duplicate()
+    all.append(_formation(&"p1_zz_reserve", P1, [Vector2(1.0, 31.0)]))
+    all.append(_formation(&"p2_zz_reserve", P2, [Vector2(47.0, 31.0)]))
+    var f := _charge_fixture(all, [], null, bind_engagement)
+    f["log"] = log
+    return f
+
+
+func _free_engagement_fixture(f: Dictionary) -> void:
+    f.engagement.free()
+    f.morale.free()
+    if f.has("consolidation"):
+        f.consolidation.free()
+    _free_charge_fixture(f)
+
+
+## Ends every remaining Charge activation (each squad holds).
+func _finish_charge_phase(f: Dictionary) -> void:
+    if f.tm.current_phase == Phase.CHARGE:
+        _complete_phase(f.activation, f.battle, f.tm)
+
+
+## Allocates every pending wound to the first living model, until nothing is
+## pending (strikes of later engagements included).
+func _drain_allocations(f: Dictionary) -> void:
+    for i in 200:
+        if not f.allocator.is_pending():
+            return
+        var target: SquadState = f.allocator.get_pending_result().target_squad
+        f.allocator.allocate_wound(target.get_living_models()[0].model_id)
+
+
+
+func test_engagement_discovery_and_resolution_order() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 5.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 5.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(10.0, 12.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(11.0, 12.0)])
+    var c := _formation(&"p1_c", P1, [Vector2(30.0, 5.0)])
+    var z := _formation(&"p2_z", P2, [Vector2(31.0, 5.0)])
+    var d := _formation(&"p1_d", P1, [Vector2(30.0, 20.0)])
+    var w := _formation(&"p2_w", P2, [Vector2(31.0, 20.0)])
+    var f := _engagement_fixture([a, x, b, y, c, z, d, w], [], true)
+    # Successful charges, in this order: B into Y, then A into X.
+    f.tracker.record_charge(&"p1_b", &"p2_y")
+    f.tracker.record_charge(&"p1_a", &"p2_x")
+    var order: Array = f.engagement.discover_engagements().map(func(e): return e.members.duplicate())
+    _check_eq(order.size(), 4, "two charging and two ongoing engagements")
+    _check_eq(order.slice(0, 2), [[&"p2_y", &"p1_b"], [&"p2_x", &"p1_a"]], "charging engagements first, in charge order")
+    _check_eq(order.slice(2), [[&"p1_c", &"p2_z"], [&"p1_d", &"p2_w"]], "then ongoing ones, by first squad in turn order")
+    _check(f.tracker.is_committed(&"p1_c") and f.tracker.engagement_of(&"p2_z").origin == EngagementTracker.Origin.ONGOING,
+        "ongoing contact is committed explicitly when the Assault phase discovers it")
+    _free_engagement_fixture(f)
+
+
+func test_assault_fights_engagements_in_order_and_completes_the_phase() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 5.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 5.0)])
+    var c := _formation(&"p1_c", P1, [Vector2(30.0, 5.0)])
+    var z := _formation(&"p2_z", P2, [Vector2(31.0, 5.0)])
+    var sixes: Array[int] = [6, 6, 6, 6, 6, 6, 6, 6]
+    var f := _engagement_fixture([a, x, c, z], sixes)
+    _check_eq(f.tm.current_phase, Phase.CHARGE, "set-up in the Charge phase")
+    _finish_charge_phase(f)
+    _check_eq(f.tm.current_phase, Phase.ASSAULT, "the Assault procedure is running")
+    _check_eq(f.tm.state, TurnManager.State.PROCEDURE_IN_PROGRESS, "as a procedure phase")
+    _check_eq(f.log.started, [[&"p1_a", &"p2_x"]], "the first engagement started; the second waits")
+    _check(f.allocator.is_pending(), "its strikes await allocation")
+    for squad in [a, x, c, z]:
+        _check_eq(f.activation.can_activate(squad), ActivationController.Result.NOT_IN_PHASE, "no squad activates meanwhile")
+    print("        (the next error is expected)")
+    _check(not f.tm.complete_procedure_phase(Phase.CHARGE), "nothing else can end the phase early")
+    _check_eq(f.tm.current_phase, Phase.ASSAULT, "still in Assault")
+    _drain_allocations(f)
+    _check_eq(f.log.started, [[&"p1_a", &"p2_x"], [&"p1_c", &"p2_z"]], "both engagements fought, one after the other")
+    _check_eq(f.log.fought.size(), 2, "each finished once")
+    _check_eq([f.tm.current_phase, f.tm.turn_number], [Phase.MOVEMENT, 2], "then Assault completes and the round ends")
+    _free_engagement_fixture(f)
+
+
+func test_target_declarations_before_any_strike() -> void:
+    # A, B (P1) and X, Y (P2) all in mutual contact: one ongoing engagement in
+    # which every squad has two possible targets.
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(11.0, 11.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(10.0, 11.0)])
+    var f := _engagement_fixture([a, b, x, y], [], true)
+    _finish_charge_phase(f)
+    _check_eq(f.log.asked, [&"p1_a"], "Player 1 (priority) declares first")
+    _check(f.log.rolled.is_empty() and not f.allocator.is_pending(), "nothing is rolled while declarations are awaited")
+    _check(not f.engagement.declare_target(x, a), "only the squad whose turn it is may declare")
+    _check(not f.engagement.declare_target(a, b), "a friendly squad is not a valid target")
+    _check(f.engagement.declare_target(a, y), "A declares Y")
+    _check_eq(f.tracker.attack_target_of(&"p1_a"), &"p2_y", "A's target is recorded")
+    _check_eq(f.log.asked, [&"p1_a", &"p2_x"], "then Player 2")
+    f.engagement.declare_target(x, b)
+    f.engagement.declare_target(b, x)
+    _check(f.log.rolled.is_empty(), "still nothing rolled before the last declaration")
+    f.engagement.declare_target(y, a)
+    _check_eq(f.log.asked, [&"p1_a", &"p2_x", &"p1_b", &"p2_y"], "players alternated, squads in squad_id order")
+    _check_eq(f.log.rolled, [[[&"p1_a", &"p2_y"], [&"p2_x", &"p1_b"], [&"p1_b", &"p2_x"], [&"p2_y", &"p1_a"]]],
+        "every strike rolled once all four declared, each at its declared target, in turn order")
+    _drain_allocations(f)
+    _free_engagement_fixture(f)
+
+
+func test_locked_and_automatic_targets() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(11.0, 11.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(10.0, 11.0)])
+    var lone := _formation(&"p1_l", P1, [Vector2(30.0, 10.0)])
+    var foe := _formation(&"p2_f", P2, [Vector2(31.0, 10.0)])
+    var f := _engagement_fixture([a, b, x, y, lone, foe], [], true)
+    f.tracker.record_charge(&"p1_a", &"p2_x")
+    _finish_charge_phase(f)
+    _check(&"p1_a" not in f.log.asked, "a charger is never asked: it keeps its charge target")
+    _check_eq(f.tracker.attack_target_of(&"p1_a"), &"p2_x", "locked to X")
+    _check(not f.engagement.declare_target(a, y), "and cannot be retargeted")
+    _check_eq(f.log.asked, [&"p2_x"], "the others declare, starting with X")
+    f.engagement.declare_target(x, a)
+    f.engagement.declare_target(b, y)
+    f.engagement.declare_target(y, b)
+    _check(&"p1_l" not in f.log.asked and &"p2_f" not in f.log.asked, "squads with one possible target are never asked")
+    _check(f.log.rolled.size() >= 1 and [&"p1_l", &"p2_f"] not in f.log.rolled[0], "(the lone pair fights in its own engagement)")
+    var lone_pair: Array = f.log.rolled.filter(func(r): return [&"p1_l", &"p2_f"] in r)
+    _check(lone_pair.size() <= 1, "fought at most once")
+    _drain_allocations(f)
+    var all_strikes := []
+    for r in f.log.rolled:
+        all_strikes.append_array(r)
+    _check([&"p1_l", &"p2_f"] in all_strikes and [&"p2_f", &"p1_l"] in all_strikes,
+        "each was assigned its only possible target automatically: %s" % [all_strikes])
+    _free_engagement_fixture(f)
+
+
+func test_engagement_attack_eligibility() -> void:
+    # P1 squad: m0 in contact; m1 0.9 from m0 (support); m2 1.1 from m0 (too
+    # far); m3 in contact but without a melee weapon.
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 8.1), Vector2(7.9, 10.0), Vector2(11.0, 11.0)])
+    squad.get_model(3).definition.melee_weapon = null
+    var enemy := _formation(&"p2_e", P2, [Vector2(11.0, 10.0)])
+    var eligible := AssaultRules.engagement_eligible(squad, [enemy])
+    _check_eq(eligible.map(func(m): return m.model_id), [0, 1], "contact, and support within 1.0 edge to edge")
+    _check_eq(AssaultRules.engagement_eligibility(squad.get_model(2), eligible), CombatResult.Eligibility.NOT_ENGAGED, "1.1 away: no support")
+    _check_eq(AssaultRules.engagement_eligibility(squad.get_model(3), eligible), CombatResult.Eligibility.NO_MELEE_WEAPON, "no melee weapon")
+    squad.morale_status = SquadState.MoraleStatus.BROKEN
+    _check_eq(AssaultRules.engagement_eligible(squad, [enemy]).map(func(m): return m.model_id), [0],
+        "a Broken squad fights only with models in contact: no support")
+    squad.morale_status = SquadState.MoraleStatus.STEADY
+    # Support comes only from the model's own squad.
+    var helper := _formation(&"p1_h", P1, [Vector2(12.0, 10.0)])
+    var near_helper := _formation(&"p1_n", P1, [Vector2(12.0, 11.9)])
+    _check_eq(AssaultRules.engagement_eligible(helper, [enemy]).size(), 1, "the other squad's model touches the enemy")
+    _check(AssaultRules.engagement_eligible(near_helper, [enemy]).is_empty(),
+        "being within 1.0 of another friendly squad's model in contact gives no support")
+    squad.take_wound(0, false)
+    _check_eq(AssaultRules.engagement_eligible(squad, [enemy]).map(func(m): return m.model_id), [],
+        "dead models neither fight nor give support")
+
+
+func test_simultaneous_strikes() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    # A: hit 6, wound 6; X: hit 6, wound 6 (no armour, no cover: no saves).
+    var rolls: Array[int] = [6, 6, 6, 6]
+    var f := _engagement_fixture([a, x], rolls)
+    _finish_charge_phase(f)
+    _check(f.engagement.dice.rolls.is_empty(), "every hit and wound roll is made before allocation begins")
+    _check_eq([a.get_model_count(), x.get_model_count()], [1, 1], "and no casualty has been applied yet")
+    _check_eq(f.log.prompts, [["p1_a's strike on p2_x (1 of 2)", P2, 1]], "Player 2 allocates A's strike first")
+    _drain_allocations(f)
+    _check(x.is_destroyed(), "X falls")
+    _check(a.is_destroyed(), "and A falls too: X was eligible when the exchange began, so it still strikes")
+    _check_eq(f.log.prompts.size(), 2, "both strikes allocated, X's by Player 1")
+    _check_eq(f.log.prompts[1], ["p2_x's strike on p1_a (2 of 2)", P1, 1], "with its strike identified")
+    _free_engagement_fixture(f)
+
+
+func test_engagement_strikes_keep_existing_combat_rules() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    a.morale_status = SquadState.MoraleStatus.SHAKEN
+    var f := _engagement_fixture([a, x], [], true)
+    var rolled := []
+    f.engagement.strikes_rolled.connect(func(_e, rs): rolled.append_array(rs))
+    _finish_charge_phase(f)
+    _check_eq(rolled[0].hit_target, a.data.profile.quality + 1, "a Shaken squad keeps its +1 hit penalty")
+    _check_eq(rolled[1].hit_target, x.data.profile.quality, "a Steady one does not")
+    _check(rolled[0].target_cover == TerrainPiece.Cover.NONE and rolled[0].attack_type == CombatResult.AttackType.MELEE,
+        "cover and attack type recorded as for any melee strike")
+    _drain_allocations(f)
+    _check(not a.lost_models_since_morale and not x.lost_models_since_morale, "melee casualties: no ordinary Morale flag")
+    _free_engagement_fixture(f)
+
+
+func test_engagement_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    raider.board_position = Vector2(19.0, 16.0)
+    main.charge.dice = ScriptedDice.new([6])
+    main.engagement.dice = DiceRoller.new(4)
+    var fought := []
+    main.engagement.engagement_fought.connect(func(e, rs): fought.append([e.members.duplicate(), rs.size()]))
+    var rolled := []
+    main.engagement.strikes_rolled.connect(func(_e, rs): rolled.append(HUD.format_strikes(rs)))
+    for i in 2:
+        _complete_phase(main.activation, main.battle, main.turn_manager)
+    main.activation.activate(line)
+    main._on_squad_right_clicked(raider, raider.board_position)
+    _check(main.charge.last_result.succeeded, "the Line Squad charges home")
+    _check_eq(main.turn_manager.current_phase, Phase.ASSAULT, "the Assault procedure runs")
+    _check(not rolled.is_empty() and rolled[0].begins_with("Strikes (all rolled before casualties):"), "the HUD lists the rolled strikes")
+    var panel: AllocationPanel = main.hud.allocation_panel
+    var guard := 0
+    while main.casualties.is_pending() and guard < 20:
+        guard += 1
+        _check(panel.visible and panel.title_label.text.contains("strike on"), "each allocation names its strike: %s" % panel.title_label.text)
+        var target: SquadState = main.casualties.get_pending_result().target_squad
+        panel.get_button(target.get_living_models()[0].model_id).pressed.emit()
+    _check_eq(fought.size(), 1, "one engagement fought")
+    _check_eq(fought[0][0], [&"p2_raider_squad", &"p1_line_squad"], "between the charger and its target")
+    _check_eq(fought[0][1], 2, "two strikes: one each way")
+    _check_eq(main.turn_manager.turn_number, 2, "the Assault phase completes and the round ends")
+    _check(not main.hud.target_panel.visible and not panel.visible, "no panel left open")
+    main.queue_free()
+    await process_frame
+
+
+# --- Task 2.3 stage 7: combat scoring and assault morale ---
+
+## A melee strike by `attacker` on `target` whose allocations remove the
+## models `removed_ids` of `target` (applied for real) and wound `hurt_ids`.
+func _scored_strike(attacker: SquadState, target: SquadState, removed_ids: Array, hurt_ids: Array = []) -> CombatResult:
+    var result := _strike(attacker, target, removed_ids.size() + hurt_ids.size())
+    for model_id in removed_ids:
+        var allocation := CombatResult.Allocation.new()
+        allocation.model_id = model_id
+        while not target.get_model(model_id).removed:
+            target.take_wound(model_id, false)
+        allocation.removed = true
+        result.allocations.append(allocation)
+    for model_id in hurt_ids:
+        var allocation := CombatResult.Allocation.new()
+        allocation.model_id = model_id
+        allocation.removed = target.take_wound(model_id, false)
+        result.allocations.append(allocation)
+    return result
+
+
+func test_outnumbering_bonus_thresholds() -> void:
+    _check_eq(CombatScoring.outnumbering_bonus(3, 3), 0, "equal numbers: no bonus")
+    _check_eq(CombatScoring.outnumbering_bonus(2, 5), 0, "fewer: no bonus")
+    _check_eq(CombatScoring.outnumbering_bonus(5, 3), 1, "more: +1")
+    _check_eq(CombatScoring.outnumbering_bonus(6, 3), 2, "exactly twice as many: +2")
+    _check_eq(CombatScoring.outnumbering_bonus(7, 3), 2, "more than twice: +2, not +3 (the bonuses are exclusive)")
+    _check_eq(CombatScoring.outnumbering_bonus(5, 4), 1, "one more: +1")
+
+
+func test_scoring_counts_models_lost_not_wounds() -> void:
+    var a := _squad_at(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(9.0, 10.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(11.0, 10.0), Vector2(12.0, 10.0), Vector2(13.0, 10.0)], 2)
+    # Three unsaved wounds on two-wound Raiders: one model lost, one hurt.
+    var strike := _scored_strike(a, x, [0], [1])
+    var outcome := CombatScoring.score(null, [a, x], [strike])
+    _check_eq(outcome.models_lost[P2], 1, "three wounds, but one model lost")
+    _check_eq(outcome.survivors, {P1: 2, P2: 2}, "survivors after casualties")
+    _check_eq(outcome.scores, {P1: 1, P2: 0}, "Player 1 scores the one model, no outnumbering at 2 v 2")
+    _check_eq([outcome.winner, outcome.reason], [P1, EngagementOutcome.Reason.SCORE], "Player 1 wins on score")
+    _check_eq(outcome.testing, [x], "the loser's surviving squad tests")
+
+
+func test_scoring_is_side_wide_across_squads() -> void:
+    var a := _squad_at(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(9.0, 10.0), Vector2(8.0, 10.0)])
+    var b := _squad_at(&"p1_b", P1, [Vector2(10.0, 12.0), Vector2(9.0, 12.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(11.0, 10.0), Vector2(12.0, 10.0)])
+    var y := _squad_at(&"p2_y", P2, [Vector2(11.0, 12.0), Vector2(12.0, 12.0)])
+    var z := _squad_at(&"p2_z", P2, [Vector2(14.0, 14.0)])
+    # A kills one of X; B targets Y and kills one; X kills one of A; Z was
+    # targeted by nobody, lost nothing and struck nothing.
+    var strikes := [_scored_strike(a, x, [0]), _scored_strike(b, y, [0]), _scored_strike(x, a, [0]), _strike(y, b, 0)]
+    var outcome := CombatScoring.score(null, [a, b, x, y, z], strikes)
+    _check_eq(outcome.models_lost, {P1: 1, P2: 2}, "losses summed across each side's squads")
+    _check_eq(outcome.survivors, {P1: 4, P2: 3}, "survivors summed across each side")
+    _check_eq(outcome.outnumbering, {P1: 1, P2: 0}, "Player 1 outnumbers 4 to 3: +1")
+    _check_eq(outcome.scores, {P1: 3, P2: 1}, "Player 1: 2 + 1; Player 2: 1")
+    _check_eq(outcome.winner, P1, "one side-wide result")
+    _check_eq(outcome.testing, [x, y, z], "every surviving losing squad tests, in squad_id order, even untouched Z")
+
+
+func test_destroyed_sides_and_squads() -> void:
+    var a := _squad_at(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(11.0, 10.0), Vector2(12.0, 10.0), Vector2(13.0, 10.0)])
+    # X loses two models but destroys A: Player 1 is wiped out, so Player 2
+    # wins whatever the score would have said.
+    var outcome := CombatScoring.score(null, [a, x], [_scored_strike(a, x, [0, 1]), _scored_strike(x, a, [0])])
+    _check_eq(outcome.scores[P1], 2, "(Player 1 would score 2)")
+    _check_eq([outcome.winner, outcome.reason], [P2, EngagementOutcome.Reason.SIDE_DESTROYED], "a destroyed side loses automatically")
+    _check(outcome.testing.is_empty(), "a destroyed squad never tests")
+    var b := _squad_at(&"p1_b", P1, [Vector2(10.0, 20.0)])
+    var y := _squad_at(&"p2_y", P2, [Vector2(11.0, 20.0)])
+    var both := CombatScoring.score(null, [b, y], [_scored_strike(b, y, [0]), _scored_strike(y, b, [0])])
+    _check_eq([both.winner, both.reason], [TurnManager.NO_PLAYER, EngagementOutcome.Reason.BOTH_DESTROYED], "both destroyed: a draw")
+    _check(both.testing.is_empty(), "with no tests")
+    var c := _squad_at(&"p1_c", P1, [Vector2(10.0, 25.0), Vector2(9.0, 25.0), Vector2(8.0, 25.0)])
+    var gone := _squad_at(&"p2_gone", P2, [Vector2(11.0, 25.0)])
+    var held := _squad_at(&"p2_held", P2, [Vector2(11.0, 26.0)])
+    var partial := CombatScoring.score(null, [c, gone, held], [_scored_strike(c, gone, [0])])
+    _check_eq(partial.winner, P1, "Player 1 wins")
+    _check_eq(partial.testing, [held], "of the losing side, only the surviving squad tests; the destroyed one does not")
+
+
+func test_drawn_engagement_tests_nobody() -> void:
+    var a := _squad_at(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(9.0, 10.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(11.0, 10.0), Vector2(12.0, 10.0)])
+    var outcome := CombatScoring.score(null, [a, x], [_scored_strike(a, x, [0]), _scored_strike(x, a, [0])])
+    _check_eq(outcome.scores, {P1: 1, P2: 1}, "1 v 1, equal survivors")
+    _check(outcome.is_draw() and outcome.testing.is_empty(), "a draw: no assault-loss test")
+    var quiet := CombatScoring.score(null, [_squad_at(&"p1_q", P1, [Vector2(1.0, 1.0), Vector2(2.0, 1.0), Vector2(3.0, 1.0), Vector2(4.0, 1.0)]),
+        _squad_at(&"p2_q", P2, [Vector2(5.0, 1.0), Vector2(6.0, 1.0)])], [])
+    _check_eq([quiet.winner, quiet.scores[P1]], [P1, 2], "with no casualties at all, outnumbering alone decides")
+
+
+## A (P1, two models) against X (P2, two models, Ld 7). A kills one Raider; X
+## misses. Strike dice: A hits 6, 1; A wounds 6; X hits 1, 1.
+func _loss_test_battle(morale_rolls: Array[int]) -> Dictionary:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(9.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0), Vector2(12.0, 10.0)])
+    x.data.profile.leadership = 7
+    var strike_rolls: Array[int] = [6, 1, 6, 1, 1]
+    var f := _engagement_fixture([a, x], strike_rolls, false, morale_rolls)
+    f["a"] = a
+    f["x"] = x
+    return f
+
+
+func test_losing_squad_fails_its_assault_loss_test() -> void:
+    var f := _loss_test_battle([6, 6])
+    var resolved_when_fought := []
+    f.engagement.engagement_fought.connect(func(e, _rs): resolved_when_fought.append(e.resolved))
+    _finish_charge_phase(f)
+    _drain_allocations(f)
+    var outcome: EngagementOutcome = f.log.resolved[0]
+    _check_eq([outcome.winner, outcome.scores], [P1, {P1: 3, P2: 0}], "Player 1 wins: 1 model + 2 for 2 v 1")
+    _check_eq(resolved_when_fought, [false], "the engagement is not resolved while it is still being scored")
+    _check(outcome.engagement.resolved, "it is marked resolved once scoring and tests are done")
+    _check_eq(outcome.loss_tests.size(), 1, "the loser tested")
+    var x: SquadState = f.x
+    _check(not outcome.loss_tests[0].passed and x.morale_status == SquadState.MoraleStatus.BROKEN, "12 fails Ld 7: Broken")
+    _check(outcome.loss_tests[0].fell_back and x.board_position.y < 10.0, "and it fell back at once: %s" % x.board_position)
+    _check(f.morale.dice.rolls.is_empty(), "the winner took no test")
+    _free_engagement_fixture(f)
+
+
+func test_losing_squad_that_passes_holds() -> void:
+    var f := _loss_test_battle([1, 1])
+    _finish_charge_phase(f)
+    _drain_allocations(f)
+    var x: SquadState = f.x
+    var before := x.board_position
+    _check(f.log.resolved[0].loss_tests[0].passed, "2 passes Ld 7")
+    _check_eq(x.morale_status, SquadState.MoraleStatus.STEADY, "it holds: status unchanged")
+    _check_eq(x.board_position, before, "and position unchanged")
+    _free_engagement_fixture(f)
+
+
+func test_shaken_and_broken_losers_keep_existing_rules() -> void:
+    var f := _loss_test_battle([6, 6])
+    var x: SquadState = f.x
+    x.morale_status = SquadState.MoraleStatus.SHAKEN
+    _finish_charge_phase(f)
+    _drain_allocations(f)
+    _check_eq(x.morale_status, SquadState.MoraleStatus.BROKEN, "a Shaken loser that fails becomes Broken, as before")
+    _free_engagement_fixture(f)
+    var g := _loss_test_battle([6, 6])
+    var y: SquadState = g.x
+    y.morale_status = SquadState.MoraleStatus.BROKEN
+    y.rally_attempted_this_turn = true
+    _finish_charge_phase(g)
+    _drain_allocations(g)
+    var outcome: EngagementOutcome = g.log.resolved[0]
+    _check(outcome.loss_tests.size() == 1 and outcome.loss_tests[0].kind == MoraleResult.Kind.ASSAULT_LOSS,
+        "an already Broken loser still takes the assault-loss test (existing behaviour)")
+    _check(outcome.loss_tests[0].fell_back, "and falls back again on a failure")
+    _free_engagement_fixture(g)
+
+
+func test_resolution_order_survives_merges() -> void:
+    # Charges: B into Y (order 1), then A into X (order 2). C/W are an ongoing
+    # engagement committed earlier. Uncommitted Q touches both A and C, so
+    # discovery merges A/X with C/W.
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 5.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(10.0, 4.0)])
+    var c := _formation(&"p1_c", P1, [Vector2(12.0, 5.0)])
+    var w := _formation(&"p2_w", P2, [Vector2(12.0, 4.0)])
+    var q := _formation(&"p2_q", P2, [Vector2(11.0, 5.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(30.0, 20.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(31.0, 20.0)])
+    var d := _formation(&"p1_d", P1, [Vector2(20.0, 28.0)])
+    var v := _formation(&"p2_v", P2, [Vector2(21.0, 28.0)])
+    var f := _engagement_fixture([a, x, c, w, q, b, y, d, v], [], true)
+    f.tracker.record_charge(&"p1_b", &"p2_y")
+    var e_ax: EngagementTracker.Engagement = f.tracker.record_charge(&"p1_a", &"p2_x")
+    f.tracker.commit([&"p1_c", &"p2_w"])
+    var order: Array = f.engagement.discover_engagements()
+    _check_eq(order.map(func(e): return e.charge_order), [1, 2, -1], "charge order kept through the merge, then ongoing")
+    _check(order[1] == e_ax, "the merge keeps the earlier engagement's identity")
+    for member in [&"p1_a", &"p2_x", &"p1_c", &"p2_w", &"p2_q"]:
+        _check(order[1].has_member(member), "%s is in the merged engagement" % member)
+    _check_eq(order[1].origin, EngagementTracker.Origin.CHARGE, "which is still a charging engagement")
+    _check_eq(order[2].members, [&"p1_d", &"p2_v"], "the separate ongoing engagement comes last")
+    _free_engagement_fixture(f)
+
+
+func test_engagement_outcome_report() -> void:
+    var a := _squad_at(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(9.0, 10.0), Vector2(8.0, 10.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(11.0, 10.0), Vector2(12.0, 10.0)])
+    var outcome := CombatScoring.score(null, [a, x], [_scored_strike(a, x, [0])])
+    _check_eq(HUD.format_engagement_outcome(outcome),
+        "Engagement result:\nPlayer 1: 1 enemy lost +2 outnumbering = 3 (3 left)\nPlayer 2: 0 enemy lost = 0 (1 left)\nPlayer 1 wins",
+        "losses, outnumbering, score and winner per side")
+
+
+# --- Task 2.3 stage 8: Consolidation ---
+
+## A ConsolidationController over `squads` with a tracker in which they are
+## committed to one resolved engagement, with attack targets `targets`
+## (squad_id -> squad_id). Returns [controller, battle, tracker, outcome].
+func _consolidation_setup(squads: Array, targets: Dictionary, terrain: TerrainMap = null) -> Array:
+    var battle := BattleState.new()
+    for squad in squads:
+        battle.add_squad(squad)
+    var tracker := EngagementTracker.new()
+    var engagement := tracker.commit(squads.map(func(sq): return sq.squad_id))
+    for squad_id in targets:
+        tracker.set_attack_target(squad_id, targets[squad_id])
+    tracker.mark_resolved(engagement)
+    var tm := TurnManager.new()
+    var controller := ConsolidationController.new()
+    controller.bind(tm, battle, tracker, null, Vector2(48.0, 32.0))
+    controller.terrain = terrain
+    var outcome := CombatScoring.score(engagement, squads, [])
+    return [controller, battle, tracker, outcome, tm]
+
+
+func _free_consolidation_setup(setup: Array) -> void:
+    setup[0].free()
+    setup[4].free()
+
+
+func test_consolidation_moves_toward_declared_target() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(10.0, 11.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(10.0, 16.0)])
+    a.get_model(1).movement_used = 3.0
+    var setup := _consolidation_setup([a, x, y], {&"p1_a": &"p2_y", &"p2_x": &"p1_a", &"p2_y": &"p1_a"})
+    var report: Array = setup[0].consolidate([setup[3]])
+    _check_eq(a.get_model(0).position, Vector2(10.0, 10.0), "a model in base contact stays where it is")
+    _check(a.get_model(1).position.distance_to(Vector2(10.0, 13.0)) < 0.0001,
+        "the other moves exactly 2.0 toward its declared target, Y, not toward X: %s" % a.get_model(1).position)
+    _check_eq(a.get_model(1).movement_used, 3.0, "consolidation leaves movement accounting untouched")
+    _check_eq(x.get_model(0).position, Vector2(11.0, 10.0), "X, in contact, stays")
+    _check(ModelPlacement.models_in_contact(y.get_model(0), a.get_model(1)),
+        "Y, taken after A, closes 2.0 into contact with A's moved model")
+    _check_eq(report.map(func(e): return [e.squad.squad_id, e.target.squad_id, e.moved, e.held]),
+        [[&"p1_a", &"p2_y", 1, 1], [&"p2_x", &"p1_a", 0, 1], [&"p2_y", &"p1_a", 1, 0]], "the report, in engagement order")
+    _check(_no_overlaps([a, x, y]), "no overlaps")
+    _free_consolidation_setup(setup)
+
+
+func test_consolidation_distance_is_fixed_and_ignores_difficult_terrain() -> void:
+    var mud := _terrain([_piece(_rect_poly(5.0, 0.0, 30.0, 30.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)])
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(20.0, 10.0)])
+    a.data.profile.movement = 12.0
+    var setup := _consolidation_setup([a, x], {&"p1_a": &"p2_x", &"p2_x": &"p1_a"}, mud)
+    setup[0].consolidate([setup[3]])
+    _check(a.board_position.distance_to(Vector2(12.0, 10.0)) < 0.0001,
+        "2.0 exactly, not a share of M 12, and not slowed by the difficult ground: %s" % a.board_position)
+    _free_consolidation_setup(setup)
+
+
+func test_consolidation_target_falls_back_to_nearest_enemy() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var gone := _formation(&"p2_gone", P2, [Vector2(10.0, 4.0)])
+    var near := _formation(&"p2_near", P2, [Vector2(14.0, 10.0)])
+    var far := _formation(&"p2_far", P2, [Vector2(10.0, 20.0)])
+    var setup := _consolidation_setup([a, gone, near, far], {&"p1_a": &"p2_gone"})
+    gone.take_wound(0, false)
+    setup[1].remove_squad(&"p2_gone")
+    var report: Array = setup[0].consolidate([setup[3]])
+    _check_eq(report[0].target, near, "the declared target is destroyed: the nearest living enemy squad instead")
+    _check(a.board_position.distance_to(Vector2(12.0, 10.0)) < 0.0001, "moved 2.0 toward it: %s" % a.board_position)
+    _free_consolidation_setup(setup)
+
+
+func test_consolidation_respects_impassable_terrain_collision_and_board() -> void:
+    var wall := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(11.0, 0.0, 11.5, 30.0))])
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(13.0, 10.0), Vector2(13.0, 12.0)])
+    var setup := _consolidation_setup([a, x], {&"p1_a": &"p2_x", &"p2_x": &"p1_a"}, wall)
+    setup[0].consolidate([setup[3]])
+    _check(a.get_model(0).position.x <= 10.5 + 0.0001 and x.get_model(0).position.x >= 12.0 - 0.0001,
+        "the wall stops both sides' models, in contact with it")
+    _check(ModelPlacement.layout_errors([a, x], Vector2(48.0, 32.0), wall).is_empty(), "no base overlaps the wall, a base, or the edge")
+    _free_consolidation_setup(setup)
+    var b := _formation(&"p1_b", P1, [Vector2(0.6, 5.0), Vector2(0.6, 7.0)])
+    var y := _formation(&"p2_y", P2, [Vector2(0.6, 2.0)])
+    var edge := _consolidation_setup([b, y], {&"p1_b": &"p2_y"})
+    edge[0].consolidate([edge[3]])
+    for model in b.get_living_models():
+        _check(ModelPlacement.base_on_board(model.position, 0.5, Vector2(48.0, 32.0)), "every base stays on the board")
+    _check(_no_overlaps([b, y]), "squad-mates moving in a file never overlap")
+    _free_consolidation_setup(edge)
+
+
+func test_broken_squads_do_not_consolidate_but_all_others_do() -> void:
+    var winner := _formation(&"p1_w", P1, [Vector2(10.0, 10.0)])
+    var loser := _formation(&"p2_l", P2, [Vector2(14.0, 10.0)])
+    var broken := _formation(&"p2_b", P2, [Vector2(10.0, 14.0)])
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    var setup := _consolidation_setup([winner, loser, broken], {&"p1_w": &"p2_l", &"p2_l": &"p1_w", &"p2_b": &"p1_w"})
+    var outcome: EngagementOutcome = setup[3]
+    outcome.winner = P1
+    var report: Array = setup[0].consolidate([outcome])
+    _check_eq(report.map(func(e): return e.squad.squad_id), [&"p1_w", &"p2_l"], "the winner and the loser that held consolidate")
+    _check_eq(broken.board_position, Vector2(10.0, 14.0), "the Broken squad does not move")
+    _check(winner.board_position.x > 10.0 and loser.board_position.x < 14.0, "both others moved")
+    _free_consolidation_setup(setup)
+    var p := _formation(&"p1_p", P1, [Vector2(10.0, 20.0)])
+    var q := _formation(&"p2_q", P2, [Vector2(14.0, 20.0)])
+    var draw := _consolidation_setup([p, q], {&"p1_p": &"p2_q", &"p2_q": &"p1_p"})
+    _check(draw[3].is_draw(), "(a drawn engagement)")
+    _check_eq(draw[0].consolidate([draw[3]]).size(), 2, "both sides of a draw consolidate")
+    _free_consolidation_setup(draw)
+
+
+func test_consolidation_contacts_count_next_round_only() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(13.0, 10.0)])
+    var setup := _consolidation_setup([a, x], {&"p1_a": &"p2_x"})
+    var tracker: EngagementTracker = setup[2]
+    var engagement := tracker.engagement_of(&"p1_a")
+    var members := engagement.members.duplicate()
+    setup[0].consolidate([setup[3]])
+    _check(EngagementRules.squads_in_contact(a, x), "consolidation made new base contact")
+    _check(engagement.resolved and engagement.members == members and tracker.get_engagements().size() == 1,
+        "the resolved engagement is unchanged by it")
+    _check(EngagementRules.group(setup[1].get_squads(), tracker).is_empty(), "no new fight this round")
+    tracker.reset(2)
+    _check_eq(EngagementRules.group(setup[1].get_squads(), tracker).size(), 1, "next round the contact is an ongoing engagement")
+    _free_consolidation_setup(setup)
+
+
+func test_consolidation_is_deterministic() -> void:
+    var outcomes := []
+    for reverse in [false, true]:
+        var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(9.0, 11.0), Vector2(11.0, 11.0), Vector2(10.0, 12.0)])
+        var x := _formation(&"p2_x", P2, [Vector2(14.0, 11.0), Vector2(14.0, 12.0)])
+        if reverse:
+            a._models.reverse()
+            x._models.reverse()
+        var setup := _consolidation_setup([x, a] if reverse else [a, x], {&"p1_a": &"p2_x", &"p2_x": &"p1_a"})
+        var outcome: EngagementOutcome = setup[3]
+        outcome.squads.sort_custom(func(p, q) -> bool: return String(p.squad_id) < String(q.squad_id))
+        setup[0].consolidate([outcome])
+        outcomes.append([a, x].map(func(sq): return sq.get_living_models().map(func(m): return [m.model_id, m.position])))
+        _free_consolidation_setup(setup)
+    _check_eq(outcomes[0], outcomes[1], "the same consolidation whatever the storage order")
+
+
+func test_consolidation_phase_runs_after_assault() -> void:
+    # A (P1, two models; the second supports from 0.5 behind) beats X (P2, two
+    # models, Ld 7), which fails its test and falls back. Strike dice: A hits
+    # 6, 1; A wounds 6; X hits 1, 1.
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(8.5, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0), Vector2(12.0, 10.0)])
+    x.data.profile.leadership = 7
+    var strike_rolls: Array[int] = [6, 1, 6, 1, 1]
+    var f := _engagement_fixture([a, x], strike_rolls, false, [6, 6], true)
+    var phases := []
+    f.tm.phase_started.connect(func(phase, _t, _p): phases.append(phase))
+    var used_before := a.get_living_models().map(func(m): return m.movement_used)
+    _finish_charge_phase(f)
+    _drain_allocations(f)
+    _check(Phase.CONSOLIDATION in phases and f.tm.turn_number == 2, "Consolidation ran after Assault, then the round ended")
+    var report: Array = f.consolidation.last_report
+    _check_eq(report.map(func(e): return e.squad.squad_id), [&"p1_a"],
+        "the winner consolidated; the loser, Broken and fallen back, did not")
+    _check_eq(a.get_living_models().map(func(m): return m.movement_used), used_before, "movement accounting untouched")
+    _free_engagement_fixture(f)
+
+
+func test_consolidation_report_text() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(10.0, 11.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    var setup := _consolidation_setup([a, x], {&"p1_a": &"p2_x", &"p2_x": &"p1_a"})
+    var report: Array = setup[0].consolidate([setup[3]])
+    _check_eq(HUD.format_consolidation(report),
+        "Consolidation:\np1_a -> p2_x: 1 moved, 1 held\np2_x -> p1_a: 0 moved, 1 held", "per squad: target, models moved, models held in contact")
+    _free_consolidation_setup(setup)
 

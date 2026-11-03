@@ -9,8 +9,11 @@ class_name MoraleRules
 ##     leader's Leadership, -1 if the squad is below half its starting strength.
 ##   - Shaken: movement allowance halved; -1 to hit, applied as a Quality
 ##     target one higher (no automatic hit on a 6, so 7+ cannot hit).
-##   - A Broken squad, or one that consolidated or took a rally test this turn,
-##     may not shoot or initiate an assault.
+##   - A Broken squad, or one that regrouped or took a rally test this turn,
+##     may not shoot or charge.
+##   - Only a Steady squad that is not restricted this turn may declare a
+##     charge: Shaken and Broken squads cannot, nor can one that regrouped or
+##     took a rally test this turn.
 ##   - Fall-back moves the leader anchor its full normal Movement straight
 ##     towards the nearest battlefield edge; ties go west, east, north, south.
 ##     Crossing the edge takes the squad off the battlefield.
@@ -50,7 +53,14 @@ static func hit_target(state: SquadState) -> int:
     return quality + (1 if state.morale_status == SquadState.MoraleStatus.SHAKEN else 0)
 
 
-## Whether morale lets `state` shoot or initiate an assault this turn.
+## Whether morale lets `state` declare a charge this turn: Steady, and not
+## restricted from initiating attacks (regrouped or took a rally test).
+## Shaken squads may still shoot and fight, but not charge.
+static func may_charge(state: SquadState) -> bool:
+    return state.morale_status == SquadState.MoraleStatus.STEADY and not state.morale_restricted_this_turn
+
+
+## Whether morale lets `state` shoot or charge this turn.
 static func may_attack(state: SquadState) -> bool:
     return state.morale_status != SquadState.MoraleStatus.BROKEN and not state.morale_restricted_this_turn
 

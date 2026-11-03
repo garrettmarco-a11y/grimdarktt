@@ -114,7 +114,7 @@ func _update_models(state: SquadState) -> void:
 static func status_text(state: SquadState) -> String:
     var text: String = ["Steady", "Shaken", "Broken"][state.morale_status]
     if state.morale_restricted_this_turn:
-        text += " (no shooting/assault)"
+        text += " (no shooting/charging)"
     return text
 
 

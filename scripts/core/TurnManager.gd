@@ -2,11 +2,21 @@ extends Node
 class_name TurnManager
 ## Owns turn, phase, priority and squad-activation state. Has no UI dependencies.
 ##
-## Flow:
-##   start_game()                    -> turn 1, Movement, Player 1 holds priority
+## Each game round (turn) runs six phases in order: Movement, Shooting, Morale,
+## Charge, Assault, Consolidation. The turn ends after Consolidation.
+##
+## Activation phases (Movement, Shooting, Morale, Charge):
 ##   begin_phase(p1_count, p2_count) -> caller supplies eligible squad activations
 ##   start_activation() / end_activation(), repeated until both players reach 0
 ##   the phase then ends and the manager waits for the next begin_phase() call.
+##
+## Procedure phases (see PROCEDURE_PHASES) are not squad activations: on
+## entering one the manager starts the procedure registered for it
+## (register_procedure) and the phase lasts until that procedure calls
+## complete_procedure_phase(). A procedure phase with nothing registered has
+## nothing to do and ends at once. begin_phase() is refused in a procedure
+## phase, and complete_procedure_phase() is refused anywhere else, so neither
+## kind of phase can end the other early.
 ##
 ## Rules (approved by the project lead):
 ##   - Priority is set once per game turn, at the start of the Movement phase:
@@ -28,8 +38,13 @@ signal turn_started(turn: int)
 signal activation_started(player: int, phase: Phase)
 signal activation_ended(player: int, phase: Phase)
 
-enum Phase { MOVEMENT, SHOOTING, ASSAULT, MORALE }
-enum State { NOT_STARTED, AWAITING_PHASE_START, IN_PHASE, ACTIVATION_IN_PROGRESS }
+enum Phase { MOVEMENT, SHOOTING, MORALE, CHARGE, ASSAULT, CONSOLIDATION }
+enum State { NOT_STARTED, AWAITING_PHASE_START, IN_PHASE, ACTIVATION_IN_PROGRESS, PROCEDURE_IN_PROGRESS }
+
+## Phases resolved by a procedure rather than by squad activations.
+const PROCEDURE_PHASES: Array[Phase] = [Phase.ASSAULT, Phase.CONSOLIDATION]
+## The last phase of a game round.
+const LAST_PHASE := Phase.CONSOLIDATION
 
 const NO_PLAYER := 0
 const PLAYER_ONE := 1
@@ -43,6 +58,8 @@ var active_player: int = NO_PLAYER
 var state: State = State.NOT_STARTED
 
 var _remaining := {PLAYER_ONE: 0, PLAYER_TWO: 0}
+## Phase -> Callable started when that procedure phase begins.
+var _procedures := {}
 
 
 static func phase_to_string(phase: Phase) -> String:
@@ -51,11 +68,43 @@ static func phase_to_string(phase: Phase) -> String:
             return "Movement"
         Phase.SHOOTING:
             return "Shooting"
-        Phase.ASSAULT:
-            return "Assault"
         Phase.MORALE:
             return "Morale"
+        Phase.CHARGE:
+            return "Charge"
+        Phase.ASSAULT:
+            return "Assault"
+        Phase.CONSOLIDATION:
+            return "Consolidation"
     return "Unknown"
+
+
+static func is_procedure_phase(phase: Phase) -> bool:
+    return phase in PROCEDURE_PHASES
+
+
+## True if `phase` is a procedure phase (same as is_procedure_phase).
+func is_procedure(phase: Phase) -> bool:
+    return is_procedure_phase(phase)
+
+
+## Registers `procedure` to run whenever procedure phase `phase` begins. It
+## receives no arguments and must eventually call complete_procedure_phase().
+func register_procedure(phase: Phase, procedure: Callable) -> void:
+    if not is_procedure_phase(phase):
+        push_error("TurnManager.register_procedure: %s is not a procedure phase" % phase_to_string(phase))
+        return
+    _procedures[phase] = procedure
+
+
+## Ends procedure phase `phase` once its procedure has finished. Refused unless
+## that procedure phase is the one in progress.
+func complete_procedure_phase(phase: Phase) -> bool:
+    if state != State.PROCEDURE_IN_PROGRESS or current_phase != phase:
+        push_error("TurnManager.complete_procedure_phase: %s is not in progress" % phase_to_string(phase))
+        return false
+    _end_phase()
+    return true
 
 
 static func other_player(player: int) -> int:
@@ -71,6 +120,7 @@ func start_game() -> void:
     state = State.AWAITING_PHASE_START
     turn_started.emit(turn_number)
     phase_changed.emit(current_phase, turn_number)
+    _begin_procedure_if_any()
 
 
 ## Starts the current phase with each player's eligible squad activations.
@@ -80,6 +130,9 @@ func start_game() -> void:
 func begin_phase(player_one_activations: int, player_two_activations: int) -> bool:
     if state != State.AWAITING_PHASE_START:
         push_error("TurnManager.begin_phase: not awaiting a phase start")
+        return false
+    if is_procedure(current_phase):
+        push_error("TurnManager.begin_phase: %s is a procedure phase" % phase_to_string(current_phase))
         return false
     if player_one_activations < 0 or player_two_activations < 0:
         push_error("TurnManager.begin_phase: activation counts must be >= 0")
@@ -174,10 +227,28 @@ func _end_phase() -> void:
     state = State.AWAITING_PHASE_START
     phase_ended.emit(ended_phase, turn_number)
 
-    if ended_phase == Phase.MORALE:
+    if ended_phase == LAST_PHASE:
         turn_number += 1
         current_phase = Phase.MOVEMENT
         turn_started.emit(turn_number)
     else:
         current_phase = (ended_phase + 1) as Phase
     phase_changed.emit(current_phase, turn_number)
+    _begin_procedure_if_any()
+
+
+## Enters the current phase's procedure if it is a procedure phase whose start
+## nobody has already handled.
+func _begin_procedure_if_any() -> void:
+    if not is_procedure(current_phase) or state != State.AWAITING_PHASE_START:
+        return
+    var phase := current_phase
+    var turn := turn_number
+    state = State.PROCEDURE_IN_PROGRESS
+    active_player = NO_PLAYER
+    phase_started.emit(phase, turn, priority_player)
+    var procedure: Callable = _procedures.get(phase, Callable())
+    if procedure.is_valid():
+        procedure.call()
+    elif state == State.PROCEDURE_IN_PROGRESS and current_phase == phase and turn_number == turn:
+        _end_phase()

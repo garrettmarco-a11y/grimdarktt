@@ -2,7 +2,8 @@ extends Node
 class_name Main
 ## Application coordinator: builds the battle state from the starting squad
 ## setups, wires the turn manager, activation, squad view, selection, movement,
-## shooting, assault, morale and HUD together, and starts the game.
+## shooting, charges, engagements, consolidation, morale and HUD together, and
+## starts the game.
 
 ## Squads placed on the battlefield at the start of the game.
 @export var squad_setups: Array[SquadSetup] = []
@@ -15,6 +16,14 @@ var terrain: TerrainMap
 var layout_errors := PackedStringArray()
 ## Shared by shooting and assault for the defender's casualty allocation.
 var casualties := CasualtyAllocator.new()
+## Round-long engagement commitments, reset at the start of every round.
+var engagements := EngagementTracker.new()
+## Charge-phase declarations and charge movement.
+var charge := ChargeController.new()
+## The Assault-phase engagement procedure.
+var engagement := EngagementController.new()
+## The automatic Consolidation-phase procedure.
+var consolidation := ConsolidationController.new()
 
 @onready var game_board: GameBoard = $GameBoard
 @onready var terrain_layer: TerrainLayer = $GameBoard/TerrainLayer
@@ -25,7 +34,6 @@ var casualties := CasualtyAllocator.new()
 @onready var movement: MovementController = $MovementController
 @onready var activation: ActivationController = $ActivationController
 @onready var shooting: ShootingController = $ShootingController
-@onready var assault: AssaultController = $AssaultController
 @onready var morale: MoraleController = $MoraleController
 @onready var hud: HUD = $HUD
 
@@ -55,10 +63,22 @@ func _ready() -> void:
     casualties.bind(activation, battle)
     shooting.bind(turn_manager, activation, battle, casualties)
     shooting.set_terrain(terrain)
-    assault.bind(turn_manager, activation, battle, casualties)
-    assault.terrain = terrain
     morale.bind(battle, turn_manager, activation, game_board.board_size)
     morale.terrain = terrain
+    engagements.bind(turn_manager)
+    charge.name = "ChargeController"
+    add_child(charge)
+    charge.bind(turn_manager, activation, battle, engagements, game_board.board_size)
+    charge.terrain = terrain
+    engagement.name = "EngagementController"
+    add_child(engagement)
+    engagement.bind(turn_manager, battle, engagements, casualties)
+    engagement.terrain = terrain
+    engagement.morale = morale
+    consolidation.name = "ConsolidationController"
+    add_child(consolidation)
+    consolidation.bind(turn_manager, battle, engagements, engagement, game_board.board_size)
+    consolidation.terrain = terrain
     hud.bind_turn_manager(turn_manager)
     hud.bind_terrain(terrain)
     hud.bind_selection(selection)
@@ -66,8 +86,10 @@ func _ready() -> void:
     hud.bind_activation(activation, selection)
     hud.bind_shooting(shooting)
     hud.bind_casualties(casualties)
-    hud.bind_assault(assault)
     hud.bind_morale(morale)
+    hud.bind_charge(charge)
+    hud.bind_engagements(engagement)
+    hud.bind_consolidation(consolidation)
     squad_layer.squad_clicked.connect(selection.select)
     squad_layer.empty_space_clicked.connect(selection.clear_selection)
     squad_layer.destination_clicked.connect(_on_destination_clicked)
@@ -84,6 +106,8 @@ func _ready() -> void:
 
 
 func _on_destination_clicked(board_point: Vector2) -> void:
+    if turn_manager.current_phase in [TurnManager.Phase.CHARGE, TurnManager.Phase.ASSAULT]:
+        return  # charges and target declarations name an enemy squad, not a point
     movement.order_move(selection.selected_squad, board_point)
 
 
@@ -93,8 +117,11 @@ func _on_squad_right_clicked(target: SquadState, board_point: Vector2) -> void:
     match turn_manager.current_phase:
         TurnManager.Phase.SHOOTING:
             shooting.order_shot(activation.active_squad, target)
+        TurnManager.Phase.CHARGE:
+            charge.declare_charge(activation.active_squad, target)
         TurnManager.Phase.ASSAULT:
-            assault.order_assault(activation.active_squad, target)
+            # A right-click names the declaring squad's target.
+            engagement.declare_target(engagement.get_declaring_squad(), target)
         _:
             _on_destination_clicked(board_point)
 
