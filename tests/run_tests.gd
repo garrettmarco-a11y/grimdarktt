@@ -4247,3 +4247,84 @@ func test_no_model_moves_into_space_still_occupied() -> void:
     _check(not f.movement.last_plan.leader_reached, "and is reported short")
     _check(_no_overlaps([pinned, enemy]), "no overlaps")
     _free_fixture(f)
+
+
+# --- Task 2.2 follow-up: fall-back edge cases ---
+
+func _fall_back_once(squads: Array, broken: SquadState, terrain: TerrainMap = null) -> Dictionary:
+    var f := _morale_fixture(squads, [6, 6])
+    f.morale.terrain = terrain
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    var results := []
+    f.morale.morale_tested.connect(func(r): results.append(r))
+    f.activation.activate(broken)
+    f["results"] = results
+    return f
+
+
+func test_fallback_leader_blocked_by_impassable_is_not_removed() -> void:
+    var broken := _squad_at(&"p1_b", P1, [Vector2(4.0, 12.0), Vector2(4.0, 14.0)])
+    var enemy := _squad_at(&"p2_e", P2, [Vector2(40.0, 16.0)])
+    var wall := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(1.5, 11.0, 2.0, 13.0))])
+    var f := _fall_back_once([broken, enemy], broken, wall)
+    _check(f.battle.get_squad(&"p1_b") != null, "a wall between the leader and the edge keeps the squad on the battlefield")
+    _check(not f.results[0].removed, "not reported removed")
+    _check(broken.get_model(0).position.distance_to(Vector2(2.5, 12.0)) < 0.0001, "the leader stops in contact with the wall: %s" % broken.get_model(0).position)
+    _check(broken.get_model(1).position.distance_to(Vector2(0.5, 14.0)) < 0.0001, "the follower, clear of it, stops at the edge")
+    _check(ModelPlacement.layout_errors([broken, enemy], Vector2(48.0, 32.0), wall).is_empty(), "a valid layout")
+    _free_morale_fixture(f)
+
+
+func test_fallback_leader_cannot_pass_through_own_follower_at_the_edge() -> void:
+    var broken := _squad_at(&"p1_b", P1, [Vector2(3.0, 12.0), Vector2(1.0, 12.0)])
+    var enemy := _squad_at(&"p2_e", P2, [Vector2(40.0, 16.0)])
+    var f := _fall_back_once([broken, enemy], broken)
+    _check(f.battle.get_squad(&"p1_b") != null, "the follower stops at the edge in the leader's way: the leader cannot leave")
+    _check(broken.get_model(1).position.distance_to(Vector2(0.5, 12.0)) < 0.0001, "follower at the edge")
+    _check(broken.get_model(0).position.distance_to(Vector2(1.5, 12.0)) < 0.0001, "leader in contact behind it, on the board")
+    _check(_no_overlaps([broken, enemy]), "no overlaps")
+    _free_morale_fixture(f)
+
+
+func test_fallback_follower_reaching_edge_does_not_remove_squad() -> void:
+    var broken := _squad_at(&"p1_b", P1, [Vector2(10.0, 12.0), Vector2(3.0, 15.0)])
+    var enemy := _squad_at(&"p2_e", P2, [Vector2(40.0, 16.0)])
+    var f := _fall_back_once([broken, enemy], broken)
+    _check(f.battle.get_squad(&"p1_b") != null, "a follower reaching the edge does not remove the squad")
+    _check_eq(broken.get_model_count(), 2, "nobody is removed")
+    _check(broken.get_model(0).position.distance_to(Vector2(4.0, 12.0)) < 0.0001, "the leader moves its full 6")
+    _check(broken.get_model(1).position.distance_to(Vector2(0.5, 15.0)) < 0.0001, "the follower stops at the edge")
+    _free_morale_fixture(f)
+
+
+func test_fallback_blocked_squad_state_and_accounting() -> void:
+    var trapped := _squad_at(&"p1_t", P1, [Vector2(10.0, 12.0), Vector2(14.0, 12.0)])
+    var cage := _squad_at(&"p2_c", P2, [Vector2(9.0, 12.0), Vector2(10.0, 11.0), Vector2(10.0, 13.0), Vector2(11.0, 12.0)])
+    var f := _fall_back_once([trapped, cage], trapped)
+    _check_eq(trapped.get_model(0).position, Vector2(10.0, 12.0), "the caged leader stays where it is")
+    _check(trapped.get_model(1).position.distance_to(Vector2(12.0, 12.0)) < 0.0001,
+        "its follower moves until it meets the cage: %s" % trapped.get_model(1).position)
+    _check_eq(trapped.get_model(0).movement_used, 0.0, "the blocked leader spent nothing")
+    _check(absf(trapped.get_model(1).movement_used - 2.0) < 0.0001, "the follower is charged the 2 it moved")
+    _check(trapped.movement_complete, "movement is complete after falling back")
+    _check_eq(f.activation.active_squad, null, "the activation ended")
+    _check(trapped in f.activation.get_activated_squads(), "and counts as spent")
+    _check(f.results[0].fell_back and not f.results[0].removed, "reported as a fall-back, not a removal")
+    _check(_no_overlaps([trapped, cage]), "a valid state: no overlaps")
+    _free_morale_fixture(f)
+
+
+func test_fallback_is_deterministic() -> void:
+    var outcomes := []
+    for reverse in [false, true]:
+        var broken := _squad_at(&"p1_b", P1, [Vector2(6.0, 12.0), Vector2(5.0, 13.0), Vector2(5.0, 11.0), Vector2(7.0, 12.0)])
+        var block := _squad_at(&"p2_k", P2, [Vector2(2.0, 12.4), Vector2(2.0, 10.6)])
+        if reverse:
+            broken._models.reverse()
+            block._models.reverse()
+        var f := _fall_back_once([block, broken] if reverse else [broken, block], broken)
+        outcomes.append(_model_results(broken))
+        _check(_no_overlaps([broken, block]), "no overlaps")
+        _free_morale_fixture(f)
+    _check_eq(outcomes[0], outcomes[1], "fall-back gives the same positions and costs whatever the storage order")
+

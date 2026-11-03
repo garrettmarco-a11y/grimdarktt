@@ -126,15 +126,18 @@ func _rally(state: SquadState) -> void:
 
 
 ## Falls the squad back its full normal Movement towards the battlefield edge
-## nearest its leader, bypassing voluntary movement validation:
-##   - If the leader's straight path carries it off the battlefield and no
-##     other squad's model or impassable terrain stands in the way, the whole
-##     squad leaves the battlefield and is removed.
-##   - Otherwise every model moves the full distance in that direction (see
-##     SquadMover.plan_shift): difficult terrain costs nothing extra, but bases
-##     never overlap other models or impassable terrain. A model that reaches
-##     the board edge or an obstacle stops there; one that is fully blocked
-##     stays where it is, with no further penalty.
+## nearest its leader, bypassing voluntary movement validation. Every living
+## model moves the full distance in that direction together (see
+## SquadMover.plan_shift): difficult terrain costs nothing extra, but bases
+## never overlap other models, of any squad, or impassable terrain.
+##   - If that distance would carry the leader's centre off the battlefield,
+##     the leader heads for the edge and may cross it. If it gets there,
+##     unblocked, the whole squad leaves the battlefield and is removed.
+##   - Otherwise (the leader stays on, or is blocked short of the edge by a
+##     model or impassable terrain) every model ends where it stopped, its
+##     whole base on the board: a model reaching the edge or an obstacle stops
+##     there, and a fully blocked model stays where it is. A follower reaching
+##     the edge never removes the squad. There is no further penalty.
 func _fall_back(state: SquadState, result: MoraleResult) -> void:
     var distance := MovementRules.allowance_for(state.data)
     var from := state.board_position
@@ -144,33 +147,20 @@ func _fall_back(state: SquadState, result: MoraleResult) -> void:
     result.fallback_from = from
     result.fallback_edge = edge
     result.fallback_to = from + direction * distance
-    if MoraleRules.is_off_board(result.fallback_to, board_size) and _leader_can_leave(state, direction, edge):
-        result.removed = true
-        state.remove_all_models()
-        _battle.remove_squad(state.squad_id)
-        return
-    var plan := SquadMover.plan_shift(state, direction, distance, _battle.get_squads(), terrain, board_size)
+    var squads := _battle.get_squads()
+    if MoraleRules.is_off_board(result.fallback_to, board_size):
+        var exit := from + direction * MoraleRules.edge_distance(from, board_size, edge)
+        var leaving := SquadMover.plan_shift(state, direction, distance, squads, terrain, board_size, Callable(), exit)
+        if leaving.leader_reached:
+            result.removed = true
+            state.remove_all_models()
+            _battle.remove_squad(state.squad_id)
+            return
+    # The leader stays on the battlefield: everyone, leader included, keeps
+    # their whole base on the board.
+    var plan := SquadMover.plan_shift(state, direction, distance, squads, terrain, board_size)
     state.apply_model_moves(plan.moves, true)
     result.fallback_to = state.board_position
-
-
-## True if the leader's base can travel straight from where it stands until
-## its centre crosses `edge`, meeting no other squad's model and no impassable
-## terrain. Its own squad moves the same way and does not block it.
-func _leader_can_leave(state: SquadState, direction: Vector2, edge: MoraleRules.Edge) -> bool:
-    var leader := state.get_leader()
-    var from := leader.position
-    var exit := from + direction * MoraleRules.edge_distance(from, board_size, edge)
-    var radius := leader.get_base_radius()
-    if terrain and terrain.base_crosses_impassable(from, exit, radius):
-        return false
-    for other in _battle.get_squads():
-        if other == state:
-            continue
-        for model in other.get_living_models():
-            if ModelPlacement.path_hits_base(from, exit, radius, model.position, model.get_base_radius()):
-                return false
-    return true
 
 
 func _test(state: SquadState, kind: MoraleResult.Kind) -> MoraleResult:

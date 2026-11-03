@@ -66,6 +66,8 @@ class _Mover:
     var budget: float
     var cost := 0.0
     var may_slide := true
+    ## Fall-back leader only: may cross the board edge (its target is the exit).
+    var may_leave_board := false
     var stopped := false
 
 
@@ -90,17 +92,24 @@ static func plan_move(squad: SquadState, destination: Vector2, others: Array, te
 ## `direction` (a unit vector), as for fall-back: difficult terrain is not
 ## paid for, everything physical still blocks, and each model may travel the
 ## full `distance` regardless of what it has already moved this turn.
+## If `leader_exit` is a Vector2, the leader instead heads for that point on
+## the board edge and may cross the edge to reach it (plan.leader_reached then
+## means it left the battlefield); everyone else stays on the board.
 static func plan_shift(squad: SquadState, direction: Vector2, distance: float, others: Array,
-        terrain: TerrainMap, board_size: Vector2, observer := Callable()) -> Plan:
+        terrain: TerrainMap, board_size: Vector2, observer := Callable(), leader_exit: Variant = null) -> Plan:
     var targets := {}
     for model in squad.get_living_models():
         targets[model.model_id] = model.position + direction * distance
-    return _resolve(squad, targets, direction, others, terrain, board_size, false, -1.0, distance, observer)
+    var leader := squad.get_leader()
+    if leader_exit != null and leader:
+        targets[leader.model_id] = leader_exit
+    return _resolve(squad, targets, direction, others, terrain, board_size, false, -1.0, distance, observer,
+        leader_exit != null)
 
 
 static func _resolve(squad: SquadState, targets: Dictionary, direction: Vector2, others: Array,
         terrain: TerrainMap, board_size: Vector2, pay_terrain: bool, allowance: float,
-        fixed_budget: float, observer: Callable) -> Plan:
+        fixed_budget: float, observer: Callable, leader_leaves := false) -> Plan:
     var leader := squad.get_leader()
     var movers: Array[_Mover] = []
     var models := squad.get_living_models()
@@ -113,6 +122,7 @@ static func _resolve(squad: SquadState, targets: Dictionary, direction: Vector2,
         mover.target = targets[model.model_id]
         mover.budget = maxf(allowance - model.movement_used, 0.0) if allowance >= 0.0 else fixed_budget
         mover.may_slide = model != leader
+        mover.may_leave_board = leader_leaves and model == leader
         movers.append(mover)
     var obstacles := []
     for other in others:
@@ -226,7 +236,7 @@ static func _cost(from: Vector2, to: Vector2, terrain: TerrainMap, pay_terrain: 
 ## overlap: movement and validation agree by construction.
 static func _legal(mover: _Mover, from: Vector2, to: Vector2, movers: Array[_Mover], obstacles: Array,
         terrain: TerrainMap, board_size: Vector2, tolerance: float) -> bool:
-    if not ModelPlacement.base_on_board(to, mover.radius, board_size, tolerance):
+    if not mover.may_leave_board and not ModelPlacement.base_on_board(to, mover.radius, board_size, tolerance):
         return false
     if terrain and terrain.base_crosses_impassable(from, to, mover.radius, tolerance):
         return false
@@ -282,7 +292,7 @@ static func _blocking_normal(mover: _Mover, step: Vector2, movers: Array[_Mover]
         var nearest = terrain.nearest_impassable_point(mover.position)
         if nearest != null:
             return (mover.position - nearest).normalized()
-    if not ModelPlacement.base_on_board(probe, mover.radius, board_size, 0.0):
+    if not mover.may_leave_board and not ModelPlacement.base_on_board(probe, mover.radius, board_size, 0.0):
         if probe.x < mover.radius:
             return Vector2.RIGHT
         if probe.y < mover.radius:
