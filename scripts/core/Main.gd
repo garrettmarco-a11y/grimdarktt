@@ -6,12 +6,16 @@ class_name Main
 
 ## Squads placed on the battlefield at the start of the game.
 @export var squad_setups: Array[SquadSetup] = []
+## Terrain placed on the battlefield; static for the battle.
+@export var terrain_setups: Array[TerrainSetup] = []
 
 var battle := BattleState.new()
+var terrain: TerrainMap
 ## Shared by shooting and assault for the defender's casualty allocation.
 var casualties := CasualtyAllocator.new()
 
 @onready var game_board: GameBoard = $GameBoard
+@onready var terrain_layer: TerrainLayer = $GameBoard/TerrainLayer
 @onready var movement_overlay: MovementOverlay = $GameBoard/MovementOverlay
 @onready var squad_layer: SquadLayer = $GameBoard/Squads
 @onready var turn_manager: TurnManager = $TurnManager
@@ -25,6 +29,10 @@ var casualties := CasualtyAllocator.new()
 
 
 func _ready() -> void:
+    # An invalid configuration (overlapping footprints) is reported by
+    # TerrainMap and leaves the battlefield without terrain.
+    terrain = TerrainMap.new(terrain_setups)
+    terrain_layer.bind(terrain)
     for setup in squad_setups:
         battle.add_squad(SquadState.new(setup.squad, setup.start_position))
     squad_layer.bind_battle(battle)
@@ -32,11 +40,15 @@ func _ready() -> void:
     activation.bind(battle, turn_manager)
     movement.bind(battle, turn_manager, game_board.board_size)
     movement.activation = activation
+    movement.terrain = terrain
     casualties.bind(activation, battle)
     shooting.bind(turn_manager, activation, battle, casualties)
+    shooting.set_terrain(terrain)
     assault.bind(turn_manager, activation, battle, casualties)
+    assault.terrain = terrain
     morale.bind(battle, turn_manager, activation, game_board.board_size)
     hud.bind_turn_manager(turn_manager)
+    hud.bind_terrain(terrain)
     hud.bind_selection(selection)
     hud.bind_movement(movement)
     hud.bind_activation(activation, selection)

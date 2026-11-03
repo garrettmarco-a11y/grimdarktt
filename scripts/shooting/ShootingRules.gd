@@ -11,11 +11,14 @@ class_name ShootingRules
 ##   - Range is measured from the firing model to the nearest target model; a
 ##     target exactly at the weapon's range is in range.
 ##   - The model needs line of sight to a target model that is in range.
-##   - Each attack rolls one D6 and hits on a roll >= the firer's Quality, one
-##     higher while Shaken (MoraleRules.hit_target).
+##   - A target squad may only be chosen if at least one living firing model
+##     has line of sight to at least one of its living models.
+##   - Each attack rolls one D6 and hits on a roll >= CombatModifiers.hit_target:
+##     the firer's Quality, one higher while Shaken, one higher again if the
+##     target squad is in heavy cover.
 ##   - Morale may forbid shooting this turn (MoraleRules.may_attack).
 
-enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING, MORALE_RESTRICTED }
+enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING, MORALE_RESTRICTED, NO_VISIBLE_TARGET }
 
 ## Tolerance for range comparisons, in board units.
 const EPSILON := 0.001
@@ -36,6 +39,20 @@ static func validate_order(firing: SquadState, target: SquadState, phase: TurnMa
     if target.get_player() == firing.get_player():
         return OrderResult.OWN_SQUAD
     return OrderResult.OK
+
+
+## True if any living firing model can see any living target model.
+static func has_visible_target(firing: SquadState, target: SquadState, los: LineOfSight) -> bool:
+    var shooters: Array[Vector2] = []
+    for model in firing.get_living_models():
+        shooters.append(firing.get_model_position(model))
+    if shooters.is_empty():
+        shooters.append(firing.board_position)
+    for shooter in shooters:
+        for point in target_points(target):
+            if los.has_line_of_sight(shooter, point):
+                return true
+    return false
 
 
 static func is_ranged_weapon(weapon: WeaponProfile) -> bool:
@@ -91,15 +108,19 @@ static func is_hit(roll: int, quality: int) -> bool:
     return roll >= quality
 
 
-## Resolves hits from every living model in `firing` at `target`. Wounds and
-## saves are rolled separately by DamageRules.
+## Resolves hits from every living model in `firing` at `target`, using the
+## target's squad-wide cover from `terrain` (none if null). Wounds and saves are
+## rolled separately by DamageRules.
 static func resolve(firing: SquadState, target: SquadState, los: LineOfSight,
-        dice: DiceRoller) -> CombatResult:
+        dice: DiceRoller, terrain: TerrainMap = null) -> CombatResult:
     var result := CombatResult.new()
     result.attacker_squad = firing
     result.target_squad = target
+    result.target_cover = TerrainRules.squad_cover(target, terrain)
+    result.target_armor_save = TerrainRules.majority_armor_save(target)
+    result.hit_target = CombatModifiers.hit_target(firing, result.target_cover)
     var targets := target_points(target)
-    var quality := MoraleRules.hit_target(firing)
+    var quality := result.hit_target
     for model in firing.get_living_models():
         var model_result := evaluate_model(model.get_model_name(), model.get_weapon(),
             firing.get_model_position(model), targets, los)

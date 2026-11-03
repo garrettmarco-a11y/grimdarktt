@@ -48,6 +48,9 @@ var turn_start_position := Vector2.ZERO
 var movement_allowance := 0.0
 ## True once the squad may not move again this turn.
 var movement_complete := false
+## Movement allowance spent this turn: the cost of the current position from
+## the turn start, which terrain can make more than the distance.
+var movement_used := 0.0
 ## Straight-line distance from turn_start_position to the current position.
 var distance_moved: float:
     get:
@@ -95,12 +98,15 @@ func begin_turn_movement(allowance: float) -> void:
     turn_start_position = board_position
     movement_allowance = allowance
     movement_complete = false
+    movement_used = 0.0
     movement_changed.emit(self)
 
 
-## Moves to `destination` and records whether movement is now complete. The
-## caller (MovementController) is responsible for validating the order.
-func apply_move(destination: Vector2, complete: bool) -> void:
+## Moves to `destination` and records whether movement is now complete and
+## the allowance used (`cost`; the straight distance from the turn start if
+## negative). The caller (MovementController) validates the order.
+func apply_move(destination: Vector2, complete: bool, cost := -1.0) -> void:
+    movement_used = cost if cost >= 0.0 else turn_start_position.distance_to(destination)
     board_position = destination
     movement_complete = complete
     movement_changed.emit(self)
@@ -116,7 +122,7 @@ func limit_movement_allowance(allowance: float) -> void:
 
 
 func get_remaining_movement() -> float:
-    return maxf(movement_allowance - distance_moved, 0.0)
+    return maxf(movement_allowance - movement_used, 0.0)
 
 
 func get_player() -> int:

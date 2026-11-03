@@ -11,9 +11,9 @@ class_name AssaultRules
 ##     ENGAGEMENT_DISTANCE of at least one living model of the target squad,
 ##     measured centre to centre between models. Others add no attacks but never
 ##     stop the rest of the squad.
-##   - Each attack rolls one D6 and hits on a roll >= the attacker's Quality
-##     (the established hit rule; no automatic natural-1 miss), one higher while
-##     Shaken (MoraleRules.hit_target).
+##   - Each attack rolls one D6 and hits on a roll >= CombatModifiers.hit_target
+##     (the established hit rule, no automatic natural-1 miss): Quality, one
+##     higher while Shaken, one higher again if the target is in heavy cover.
 ##   - Morale may forbid initiating an assault (MoraleRules.may_attack). Being
 ##     attacked is unaffected: there is no defensive fighting step yet.
 ##   - Line of sight does not apply to melee.
@@ -70,15 +70,20 @@ static func evaluate_model(model_name: String, weapon: WeaponProfile, position: 
     return result
 
 
-## Resolves melee hits from every living model in `attacker` at `target`.
-## Wounds and saves are rolled separately by DamageRules.
-static func resolve(attacker: SquadState, target: SquadState, dice: DiceRoller) -> CombatResult:
+## Resolves melee hits from every living model in `attacker` at `target`,
+## using the target's squad-wide cover from `terrain` (none if null). Wounds and
+## saves are rolled separately by DamageRules.
+static func resolve(attacker: SquadState, target: SquadState, dice: DiceRoller,
+        terrain: TerrainMap = null) -> CombatResult:
     var result := CombatResult.new()
     result.attack_type = CombatResult.AttackType.MELEE
     result.attacker_squad = attacker
     result.target_squad = target
+    result.target_cover = TerrainRules.squad_cover(target, terrain)
+    result.target_armor_save = TerrainRules.majority_armor_save(target)
+    result.hit_target = CombatModifiers.hit_target(attacker, result.target_cover)
     var targets := ShootingRules.target_points(target)
-    var quality := MoraleRules.hit_target(attacker)
+    var quality := result.hit_target
     for model in attacker.get_living_models():
         var model_result := evaluate_model(model.get_model_name(), model.get_melee_weapon(),
             attacker.get_model_position(model), targets)

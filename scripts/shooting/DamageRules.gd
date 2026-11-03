@@ -6,8 +6,10 @@ class_name DamageRules
 ## Rules (approved by the project lead):
 ##   - Each hit rolls one D6 to wound, against Strength vs Toughness:
 ##     S >= 2T: 2+, S > T: 3+, S == T: 4+, S < T: 5+, S <= T/2: 6+.
-##   - Each wound allows one D6 armor save against the target's armor_save plus
-##     the weapon's AP. A target number worse than 6+ cannot be saved.
+##   - Each wound allows one D6 armor save against the target squad's majority
+##     armor_save, plus the weapon's AP, minus 1 if the squad is in light or
+##     heavy cover. The best possible save is 2+; worse than 6+ cannot be
+##     saved. A squad with no save (0) gets 6+ from cover.
 ##   - A natural 1 always fails, both to wound and to save.
 ##   - Each unsaved wound is one point of damage. The defender allocates each
 ##     one to any living model in the target squad.
@@ -16,6 +18,8 @@ enum AllocationResult { OK, NO_PENDING_WOUNDS, UNKNOWN_MODEL, MODEL_REMOVED }
 
 ## A save target above this cannot succeed.
 const BEST_POSSIBLE_TARGET := 6
+## No save target is better than this.
+const BEST_SAVE := 2
 
 
 static func wound_target(strength: int, toughness: int) -> int:
@@ -34,11 +38,13 @@ static func is_wound(roll: int, target: int) -> bool:
     return roll != 1 and roll >= target
 
 
-## Save target number after AP, or 0 if the target has no armor save.
-static func save_target(armor_save: int, armor_piercing: int) -> int:
-    if armor_save <= 0:
+## Save target number after AP and cover, or 0 if there is no save at all.
+## No armour (0) counts as 7+, so cover alone gives 6+.
+static func save_target(armor_save: int, armor_piercing: int, cover_bonus := 0) -> int:
+    if armor_save <= 0 and cover_bonus <= 0:
         return 0
-    return armor_save + maxi(armor_piercing, 0)
+    var base := armor_save if armor_save > 0 else 7
+    return maxi(base + maxi(armor_piercing, 0) - cover_bonus, BEST_SAVE)
 
 
 static func can_be_saved(target: int) -> bool:
@@ -50,17 +56,19 @@ static func is_saved(roll: int, target: int) -> bool:
 
 
 ## For each attacking model: rolls a wound for every hit, then a save for every
-## wound, using the target squad's Toughness and armor save. Fills the
+## wound, using the target squad's Toughness and the majority armour save and
+## cover recorded on `result`. Saves come before allocation. Fills the
 ## per-model wound and save fields; allocation happens separately.
 static func resolve_wounds_and_saves(result: CombatResult, dice: DiceRoller) -> void:
     var profile := result.target_squad.data.profile if result.target_squad.data else null
     var toughness := profile.toughness if profile else 0
-    var armor_save := profile.armor_save if profile else 0
+    var armor_save := result.target_armor_save
+    var cover_bonus := TerrainRules.cover_save_bonus(result.target_cover)
     for model in result.model_results:
         if model.hits == 0:
             continue
         model.wound_target = wound_target(model.weapon.strength, toughness)
-        model.save_target = save_target(armor_save, model.weapon.armor_piercing)
+        model.save_target = save_target(armor_save, model.weapon.armor_piercing, cover_bonus)
         for i in model.hits:
             var roll := dice.roll_d6()
             model.wound_rolls.append(roll)

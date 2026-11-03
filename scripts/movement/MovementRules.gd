@@ -15,9 +15,15 @@ class_name MovementRules
 ##     allowance of the turn-start position.
 ##   - Once a squad has moved its full allowance its movement is complete.
 ##   - Morale can reduce the allowance (MoraleRules.movement_factor, applied by
-##     MovementController); forced fall-back moves bypass these rules.
+##     MovementController); forced fall-back moves bypass these rules,
+##     including terrain.
+##   - Terrain: each living model moves in a straight line from its turn-start
+##     position to its destination (the squad keeps its formation). Distance in
+##     difficult terrain costs double; the squad's cost is its most restricted
+##     model's, checked against the (possibly halved) allowance. No model may
+##     pass through a terrain piece's impassable_area.
 
-enum Result { OK, NO_SQUAD, WRONG_PHASE, NOT_ACTIVATED, MOVEMENT_COMPLETE, OFF_BOARD, OUT_OF_RANGE }
+enum Result { OK, NO_SQUAD, WRONG_PHASE, NOT_ACTIVATED, MOVEMENT_COMPLETE, OFF_BOARD, OUT_OF_RANGE, IMPASSABLE }
 
 ## Tolerance for float comparisons, in board units.
 const EPSILON := 0.001
@@ -37,7 +43,7 @@ static func distance(from: Vector2, to: Vector2) -> float:
 ## `phase`, on a board of `board_size` units. `squad_is_activated` says whether
 ## `state` is the currently activated squad. Changes nothing.
 static func validate(state: SquadState, destination: Vector2, phase: TurnManager.Phase,
-        board_size: Vector2, squad_is_activated := true) -> Result:
+        board_size: Vector2, squad_is_activated := true, terrain: TerrainMap = null) -> Result:
     if state == null:
         return Result.NO_SQUAD
     if phase != TurnManager.Phase.MOVEMENT:
@@ -49,11 +55,36 @@ static func validate(state: SquadState, destination: Vector2, phase: TurnManager
     if destination.x < 0.0 or destination.y < 0.0 \
             or destination.x > board_size.x or destination.y > board_size.y:
         return Result.OFF_BOARD
-    if distance(state.turn_start_position, destination) > state.movement_allowance + EPSILON:
+    if terrain:
+        for path in model_paths(state, destination):
+            if terrain.crosses_impassable(path[0], path[1]):
+                return Result.IMPASSABLE
+    if movement_cost(state, destination, terrain) > state.movement_allowance + EPSILON:
         return Result.OUT_OF_RANGE
     return Result.OK
 
 
+## [turn-start position, destination] for each living model if the squad moves
+## its anchor to `destination`; just the anchor's if it lists no models.
+static func model_paths(state: SquadState, destination: Vector2) -> Array:
+    var paths := []
+    for model in state.get_living_models():
+        paths.append([state.turn_start_position + model.offset, destination + model.offset])
+    if paths.is_empty():
+        paths.append([state.turn_start_position, destination])
+    return paths
+
+
+## Allowance a move to `destination` uses: the highest cost among the living
+## models' paths from their turn-start positions (difficult terrain doubled).
+static func movement_cost(state: SquadState, destination: Vector2, terrain: TerrainMap = null) -> float:
+    var cost := 0.0
+    for path in model_paths(state, destination):
+        var model_cost: float = terrain.movement_cost(path[0], path[1]) if terrain else distance(path[0], path[1])
+        cost = maxf(cost, model_cost)
+    return cost
+
+
 ## True if moving `state` to `destination` uses its full allowance this turn.
-static func exhausts_allowance(state: SquadState, destination: Vector2) -> bool:
-    return distance(state.turn_start_position, destination) >= state.movement_allowance - EPSILON
+static func exhausts_allowance(state: SquadState, destination: Vector2, terrain: TerrainMap = null) -> bool:
+    return movement_cost(state, destination, terrain) >= state.movement_allowance - EPSILON

@@ -1,0 +1,9 @@
+[gd_resource type="Resource" script_class="TerrainPiece" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/terrain/TerrainPiece.gd" id="1_piece"]
+
+[resource]
+script = ExtResource("1_piece")
+terrain_name = "Mud Flats"
+footprint = PackedVector2Array(-4, -2, 0, -3, 4, -2, 3, 2, 0, 0.5, -3, 2)
+difficult = true

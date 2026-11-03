@@ -1095,7 +1095,7 @@ func test_line_of_sight_query() -> void:
     los.add_blocker(Rect2(10.0, 4.0, 2.0, 2.0))
     _check(not los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(20.0, 5.0)), "blocker on the line blocks")
     _check(los.has_line_of_sight(Vector2(0.0, 0.0), Vector2(20.0, 0.0)), "blocker off the line does not block")
-    _check(not los.has_line_of_sight(Vector2(11.0, 5.0), Vector2(20.0, 5.0)), "line starting inside a blocker is blocked")
+    _check(los.has_line_of_sight(Vector2(11.0, 5.0), Vector2(20.0, 5.0)), "a model inside a blocker can see out")
     los.clear_blockers()
     _check(los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(20.0, 5.0)), "clear again once removed")
 
@@ -1672,8 +1672,12 @@ func test_hud_shooting_report() -> void:
     allocation.removed = true
     result.allocations = [allocation]
     result.target_destroyed = true
+    result.target_cover = TerrainPiece.Cover.HEAVY
+    result.target_armor_save = 0
+    result.hit_target = 5
     _check_eq(HUD.format_combat_result(result), "\n".join([
         "Shooters shot Targets",
+        "Target: Heavy cover, armour none; hits on 5+",
         "Fired: 1  Unable: 1",
         "Attacks 2: 1 hit, 1 miss",
         "Wounds 1: 0 saved, 1 unsaved",
@@ -2250,8 +2254,11 @@ func test_hud_assault_report() -> void:
     far.eligibility = CombatResult.Eligibility.NOT_ENGAGED
     result.model_results = [fighter, unarmed, far]
     result.models_remaining = 2
+    result.target_armor_save = 5
+    result.hit_target = 4
     _check_eq(HUD.format_combat_result(result), "\n".join([
         "Attackers assaulted Defenders",
+        "Target: None cover, armour 5+; hits on 4+",
         "Fought: 1  Unable: 2",
         "Attacks 2: 1 hit, 1 miss",
         "Wounds 1: 1 saved, 0 unsaved",
@@ -2824,6 +2831,755 @@ func test_morale_ui_in_main_scene() -> void:
     _check_eq(activation.active_squad, null, "no activation left open")
     main.queue_free()
     await process_frame
+
+
+## A rectangle polygon from (x0, y0) to (x1, y1), in board units.
+func _rect_poly(x0: float, y0: float, x1: float, y1: float) -> PackedVector2Array:
+    return PackedVector2Array([Vector2(x0, y0), Vector2(x1, y0), Vector2(x1, y1), Vector2(x0, y1)])
+
+
+## A terrain piece for tests. Temporary fixture data.
+func _piece(footprint := PackedVector2Array(), blocker := PackedVector2Array(),
+        cover := TerrainPiece.Cover.NONE, difficult := false, impassable_area := PackedVector2Array()) -> TerrainPiece:
+    var piece := TerrainPiece.new()
+    piece.footprint = footprint
+    piece.los_blocker = blocker
+    piece.cover = cover
+    piece.difficult = difficult
+    piece.impassable_area = impassable_area
+    return piece
+
+
+## A TerrainMap with each piece placed at the origin (polygons in board coordinates).
+func _terrain(pieces: Array) -> TerrainMap:
+    var terrain := TerrainMap.new()
+    for piece in pieces:
+        terrain.add(piece)
+    return terrain
+
+
+## A squad whose models stand at `points` (the first is the leader/anchor).
+func _squad_at(squad_id: StringName, player: int, points: Array, wounds := 1) -> SquadState:
+    var models := []
+    for i in points.size():
+        models.append(["M%d" % i, _make_weapon(30.0, 1), points[i] - points[0], _make_melee(1)])
+    var state := _make_shooter(squad_id, player, points[0], models, 4, wounds)
+    state.data.profile.movement = 6.0
+    return state
+
+
+func _covers(state: SquadState, terrain: TerrainMap) -> Array:
+    return state.get_living_models().map(func(m): return TerrainRules.model_cover(state, m, terrain))
+
+
+func test_footprint_point_membership() -> void:
+    var square := _rect_poly(0.0, 0.0, 4.0, 4.0)
+    _check(TerrainGeometry.contains_point(square, Vector2(2.0, 2.0)), "inside")
+    _check(not TerrainGeometry.contains_point(square, Vector2(5.0, 2.0)), "outside")
+    _check(TerrainGeometry.contains_point(square, Vector2(4.0, 2.0)), "exactly on an edge counts as inside")
+    _check(TerrainGeometry.contains_point(square, Vector2(4.0, 4.0)), "exactly on a vertex counts as inside")
+    _check(not TerrainGeometry.contains_point(square, Vector2(4.01, 2.0)), "just beyond the edge is outside")
+    var concave := PackedVector2Array([Vector2(0, 0), Vector2(4, 0), Vector2(4, 1), Vector2(1, 1), Vector2(1, 4), Vector2(0, 4)])
+    _check(TerrainGeometry.contains_point(concave, Vector2(0.5, 3.0)), "concave: in the upright arm")
+    _check(TerrainGeometry.contains_point(concave, Vector2(3.0, 0.5)), "concave: in the base arm")
+    _check(not TerrainGeometry.contains_point(concave, Vector2(3.0, 3.0)), "concave: the notch is outside")
+
+
+func test_rotated_translated_terrain() -> void:
+    var terrain := TerrainMap.new()
+    var piece := _piece(_rect_poly(-2.0, -1.0, 2.0, 1.0), _rect_poly(-2.0, -0.2, 2.0, 0.2), TerrainPiece.Cover.LIGHT)
+    terrain.add(piece, Vector2(10.0, 10.0), deg_to_rad(90.0))
+    _check_eq(terrain.pieces_at(Vector2(10.0, 11.5)), [piece], "rotated 90 degrees: now 4 tall")
+    _check_eq(terrain.pieces_at(Vector2(11.5, 10.0)), [], "and 2 wide")
+    _check_eq(terrain.cover_at(Vector2(10.0, 8.0)), TerrainPiece.Cover.LIGHT, "on the rotated edge")
+    _check(terrain.is_segment_blocked(Vector2(5.0, 10.0), Vector2(15.0, 10.0)), "rotated blocker obstructs across it")
+    _check(not terrain.is_segment_blocked(Vector2(9.5, 5.0), Vector2(9.5, 15.0)), "but not alongside it")
+    var setup := TerrainSetup.new()
+    setup.piece = piece
+    setup.position = Vector2(30.0, 5.0)
+    setup.rotation_degrees = 90.0
+    var from_setup := TerrainMap.new([setup])
+    _check_eq(from_setup.pieces_at(Vector2(30.0, 6.5)), [piece], "TerrainSetup placement and rotation")
+
+
+func test_touching_footprints_boundary_cover() -> void:
+    var light := _piece(_rect_poly(0.0, 0.0, 4.0, 6.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT)
+    var heavy := _piece(_rect_poly(4.0, 0.0, 10.0, 6.0), PackedVector2Array(), TerrainPiece.Cover.HEAVY)
+    var terrain := _terrain([light, heavy])
+    _check(terrain.is_valid(), "touching footprints are legal")
+    _check_eq(terrain.pieces_at(Vector2(2.0, 3.0)), [light], "a single footprint contains an interior point")
+    _check_eq(terrain.cover_at(Vector2(2.0, 3.0)), TerrainPiece.Cover.LIGHT, "light interior")
+    _check_eq(terrain.cover_at(Vector2(7.0, 3.0)), TerrainPiece.Cover.HEAVY, "heavy interior")
+    _check_eq(terrain.pieces_at(Vector2(4.0, 3.0)), [light, heavy], "a shared edge lies in both footprints")
+    _check_eq(terrain.cover_at(Vector2(4.0, 3.0)), TerrainPiece.Cover.LIGHT,
+        "boundary convention: the less protective cover on a shared edge")
+    _check_eq(terrain.cover_at(Vector2(4.0, 6.0)), TerrainPiece.Cover.LIGHT, "... and on a shared vertex")
+    _check_eq(terrain.cover_at(Vector2(12.0, 3.0)), TerrainPiece.Cover.NONE, "outside both")
+
+
+## Builds a TerrainMap from setups of `pieces` at `positions` with `rotations` (degrees).
+func _setups(pieces: Array, positions: Array, rotations: Array = []) -> Array[TerrainSetup]:
+    var setups: Array[TerrainSetup] = []
+    for i in pieces.size():
+        var setup := TerrainSetup.new()
+        setup.piece = pieces[i]
+        setup.position = positions[i]
+        setup.rotation_degrees = rotations[i] if i < rotations.size() else 0.0
+        setups.append(setup)
+    return setups
+
+
+func test_footprint_overlap_validation() -> void:
+    var square := _piece(_rect_poly(-2.0, -2.0, 2.0, 2.0))
+    square.terrain_name = "Square"
+    var small := _piece(_rect_poly(-0.5, -0.5, 0.5, 0.5))
+    small.terrain_name = "Small"
+    var wall := _piece(PackedVector2Array(), _rect_poly(-3.0, -0.2, 3.0, 0.2))
+    print("        (the next 7 errors are expected)")
+    var cases := [
+        ["two disjoint footprints", [square, square], [Vector2(5, 5), Vector2(15, 5)], [], true],
+        ["touching at an edge", [square, square], [Vector2(5, 5), Vector2(9, 5)], [], true],
+        ["touching at a vertex", [square, square], [Vector2(5, 5), Vector2(9, 9)], [], true],
+        ["partial overlap", [square, square], [Vector2(5, 5), Vector2(7, 6)], [], false],
+        ["one contained in another", [square, small], [Vector2(5, 5), Vector2(5.5, 5.5)], [], false],
+        ["identical footprints", [square, square], [Vector2(5, 5), Vector2(5, 5)], [], false],
+        ["overlap after translation", [square, square], [Vector2(5, 5), Vector2(8.9, 5)], [], false],
+        ["overlap after rotation", [square, square], [Vector2(5, 5), Vector2(9.5, 5)], [0.0, 45.0], false],
+        ["rotation back to touching", [square, square], [Vector2(5, 5), Vector2(9, 5)], [0.0, 90.0], true],
+        ["LoS geometry may overlap footprints", [square, wall], [Vector2(5, 5), Vector2(5, 5)], [], true],
+    ]
+    for c in cases:
+        var map := TerrainMap.new(_setups(c[1], c[2], c[3]))
+        _check_eq(map.is_valid(), c[4], c[0])
+        _check_eq(map.get_placed().size(), c[1].size() if c[4] else 0,
+            "%s: %s" % [c[0], "all pieces placed" if c[4] else "configuration rejected whole"])
+    var rejected := TerrainMap.new(_setups([square, small], [Vector2(5, 5), Vector2(5.5, 5.5)]))
+    _check_eq(rejected.errors.size(), 1, "one error per overlapping pair")
+    _check(rejected.errors[0].contains("setup #0 'Square' at (5.0, 5.0)") and rejected.errors[0].contains("setup #1 'Small' at (5.5, 5.5)"),
+        "the error names both conflicting pieces and where they stand: %s" % rejected.errors[0])
+    var incremental := _terrain([_piece(_rect_poly(0.0, 0.0, 4.0, 4.0))])
+    _check(not incremental.add(_piece(_rect_poly(3.0, 3.0, 6.0, 6.0))), "add() refuses an overlapping piece")
+    _check_eq(incremental.get_placed().size(), 1, "the map is unchanged")
+    _check(incremental.add(_piece(_rect_poly(4.0, 0.0, 6.0, 4.0))), "add() accepts a touching piece")
+
+
+func test_footprint_overlap_tolerance_after_rotation() -> void:
+    var square := _rect_poly(-2.0, -2.0, 2.0, 2.0)
+    var flush_rejected := 0
+    var vertex_rejected := 0
+    var overlap_missed := 0
+    var cases := 0
+    for i in 72:
+        var degrees := float(i) * 5.0 + 0.37
+        var rotation := deg_to_rad(degrees)
+        for origin in [Vector2(20.0, 15.0), Vector2(3.7, 28.1), Vector2(41.3, 2.9)]:
+            cases += 1
+            var a := TerrainGeometry.transform_polygon(square, origin, rotation)
+            var flush := TerrainGeometry.transform_polygon(square, origin + Vector2(4.0, 1.3).rotated(rotation), rotation)
+            var corner := TerrainGeometry.transform_polygon(square, origin + Vector2(4.0, 4.0).rotated(rotation), rotation)
+            var edge_overlap := TerrainGeometry.transform_polygon(square, origin + Vector2(3.99, 1.3).rotated(rotation), rotation)
+            var corner_overlap := TerrainGeometry.transform_polygon(square, origin + Vector2(3.99, 3.99).rotated(rotation), rotation)
+            if TerrainGeometry.polygons_overlap(a, flush) or TerrainGeometry.polygons_overlap(flush, a):
+                flush_rejected += 1
+            if TerrainGeometry.polygons_overlap(a, corner) or TerrainGeometry.polygons_overlap(corner, a):
+                vertex_rejected += 1
+            if not TerrainGeometry.polygons_overlap(a, edge_overlap) or not TerrainGeometry.polygons_overlap(corner_overlap, a):
+                overlap_missed += 1
+    _check_eq(flush_rejected, 0, "rotated footprints placed flush are never rejected (%d placements)" % cases)
+    _check_eq(vertex_rejected, 0, "rotated footprints touching at a vertex are never rejected")
+    _check_eq(overlap_missed, 0, "a rotated 0.01 overlap, along an edge or at a corner, is always rejected")
+    var placed := TerrainMap.new(_setups([_piece(square), _piece(square)],
+        [Vector2(20.0, 15.0), Vector2(20.0, 15.0) + Vector2(4.0, 0.0).rotated(deg_to_rad(37.0))], [37.0, 37.0]))
+    _check(placed.is_valid(), "a flush rotated pair is a valid terrain configuration")
+    _check_eq(placed.get_placed().size(), 2, "... and both pieces are placed")
+    var square_a := _rect_poly(0.0, 0.0, 4.0, 4.0)
+    _check(not TerrainGeometry.polygons_overlap(square_a, _rect_poly(3.99999, 0.0, 8.0, 4.0)),
+        "an overlap at float-rounding depth counts as touching")
+    _check(TerrainGeometry.polygons_overlap(square_a, _rect_poly(3.9995, 0.0, 8.0, 4.0)),
+        "an overlap shallower than the 0.001 boundary tolerance is still an overlap")
+    var l_shape := PackedVector2Array([Vector2(0, 0), Vector2(4, 0), Vector2(4, 1), Vector2(1, 1), Vector2(1, 4), Vector2(0, 4)])
+    _check(not TerrainGeometry.polygons_overlap(l_shape, _rect_poly(1.0, 1.0, 4.0, 4.0)), "concave: a square filling the notch touches")
+    _check(TerrainGeometry.polygons_overlap(l_shape, _rect_poly(0.9, 1.0, 4.0, 4.0)), "concave: a square pushed into the arm overlaps")
+    var u_shape := PackedVector2Array([Vector2(0, 0), Vector2(10, 0), Vector2(10, 6), Vector2(8, 6), Vector2(8, 2),
+        Vector2(2, 2), Vector2(2, 6), Vector2(0, 6)])
+    _check(TerrainGeometry.polygons_overlap(u_shape, _rect_poly(-1.0, 4.0, 11.0, 5.0)), "concave: a bar across both arms of a U overlaps")
+    _check(not TerrainGeometry.polygons_overlap(u_shape, _rect_poly(2.0, 2.0, 8.0, 6.0)), "concave: a block filling the U's gap touches")
+    var strip := _rect_poly(2.0, 5.0, 8.0, 5.0015)
+    _check(TerrainGeometry.polygons_overlap(_rect_poly(0.0, 0.0, 10.0, 10.0), strip)
+        and TerrainGeometry.polygons_overlap(strip, _rect_poly(0.0, 0.0, 10.0, 10.0)),
+        "a strip too narrow to survive shrinking is still caught inside a larger footprint")
+
+func test_narrow_footprint_overlap() -> void:
+    var cross_rejected := []
+    var touch_accepted := []
+    for width in [0.0015, 0.0005, 0.0002]:
+        for degrees in [0.0, 33.0, 71.0]:
+            var centre := Vector2(20.3, 15.7)
+            var along := TerrainGeometry.transform_polygon(_rect_poly(-2.0, -width / 2.0, 2.0, width / 2.0), centre, deg_to_rad(degrees))
+            var across := TerrainGeometry.transform_polygon(_rect_poly(-width / 2.0, -2.0, width / 2.0, 2.0), centre, deg_to_rad(degrees + 40.0))
+            var beside := TerrainGeometry.transform_polygon(_rect_poly(-2.0, width / 2.0, 2.0, width * 1.5), centre, deg_to_rad(degrees))
+            var end_on := TerrainGeometry.transform_polygon(_rect_poly(2.0, -width / 2.0, 6.0, width / 2.0), centre, deg_to_rad(degrees))
+            cross_rejected.append(TerrainGeometry.polygons_overlap(along, across) and TerrainGeometry.polygons_overlap(across, along))
+            touch_accepted.append(not TerrainGeometry.polygons_overlap(along, beside) and not TerrainGeometry.polygons_overlap(along, end_on))
+    _check(not cross_rejected.has(false), "two narrow footprints crossing are rejected at every width and angle: %s" % [cross_rejected])
+    _check(not touch_accepted.has(false), "narrow footprints side by side or end to end only touch: %s" % [touch_accepted])
+    var wide := _rect_poly(0.0, 0.0, 4.0, 4.0)
+    _check(TerrainGeometry.polygons_overlap(wide, _rect_poly(-1.0, 2.0, 5.0, 2.0005)), "a narrow footprint crossing a wide one is rejected")
+    _check(TerrainGeometry.polygons_overlap(_rect_poly(1.0, 2.0, 3.0, 2.0005), wide)
+        and TerrainGeometry.polygons_overlap(wide, _rect_poly(1.0, 2.0, 3.0, 2.0005)),
+        "a narrow footprint inside a wide one is rejected")
+    _check(not TerrainGeometry.polygons_overlap(wide, _rect_poly(4.0, 1.0, 6.0, 1.0005)), "a narrow footprint touching a wide one is accepted")
+    _check(not TerrainGeometry.polygons_overlap(_rect_poly(-1.0, 4.0, 5.0, 4.0005), wide), "a narrow footprint along a wide one's edge is accepted")
+    print("        (the next error is expected)")
+    var crossing := TerrainMap.new(_setups([_piece(_rect_poly(-2.0, -0.0005, 2.0, 0.0005)), _piece(_rect_poly(-2.0, -0.0005, 2.0, 0.0005))],
+        [Vector2(20.0, 15.0), Vector2(20.0, 15.0)], [0.0, 90.0]))
+    _check(not crossing.is_valid() and crossing.get_placed().is_empty(), "a configuration with crossing narrow footprints is rejected whole")
+
+func test_footprint_membership_per_model() -> void:
+    var terrain := _terrain([_piece(_rect_poly(0.0, 0.0, 10.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT)])
+    var squad := _squad_at(&"s", P1, [Vector2(8.0, 5.0), Vector2(11.0, 5.0), Vector2(9.0, 6.0)])
+    _check_eq(_covers(squad, terrain), [TerrainPiece.Cover.LIGHT, TerrainPiece.Cover.NONE, TerrainPiece.Cover.LIGHT],
+        "each model by its own position")
+    squad.board_position = Vector2(20.0, 5.0)
+    _check_eq(_covers(squad, terrain), [TerrainPiece.Cover.NONE, TerrainPiece.Cover.NONE, TerrainPiece.Cover.NONE],
+        "membership follows movement")
+    squad.board_position = Vector2(8.0, 5.0)
+    squad.take_wound(2)
+    _check_eq(TerrainRules.cover_counts(squad, terrain), [1, 1, 0], "removed model ignored")
+
+
+func test_terrain_properties_are_independent() -> void:
+    var bare := _piece(_rect_poly(0.0, 0.0, 4.0, 4.0))
+    var light_open := _piece(_rect_poly(10.0, 0.0, 14.0, 4.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT)
+    var wall := _piece(PackedVector2Array(), _rect_poly(20.0, 0.0, 21.0, 4.0))
+    var mud := _piece(_rect_poly(30.0, 0.0, 34.0, 4.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)
+    var rock := _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(40.0, 0.0, 41.0, 4.0))
+    var odd := _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.HEAVY, true)
+    var terrain := _terrain([bare, light_open, wall, mud, rock, odd])
+    _check_eq(terrain.pieces_at(Vector2(2.0, 2.0)), [bare], "footprint without cover still contains models")
+    _check_eq(terrain.cover_at(Vector2(2.0, 2.0)), TerrainPiece.Cover.NONE, "... and gives no cover")
+    _check_eq(terrain.cover_at(Vector2(12.0, 2.0)), TerrainPiece.Cover.LIGHT, "cover without LoS obstruction")
+    _check(not terrain.is_segment_blocked(Vector2(8.0, 2.0), Vector2(16.0, 2.0)), "light cover does not block LoS")
+    _check_eq(terrain.movement_cost(Vector2(8.0, 2.0), Vector2(16.0, 2.0)), 8.0, "cover without difficult movement")
+    _check(terrain.is_segment_blocked(Vector2(18.0, 2.0), Vector2(23.0, 2.0)), "LoS blocker without footprint")
+    _check_eq(terrain.cover_at(Vector2(20.5, 2.0)), TerrainPiece.Cover.NONE, "... gives no cover")
+    _check(not terrain.crosses_impassable(Vector2(18.0, 2.0), Vector2(23.0, 2.0)), "... and is passable")
+    _check_eq(terrain.movement_cost(Vector2(28.0, 2.0), Vector2(36.0, 2.0)), 12.0, "difficult terrain without cover")
+    _check_eq(terrain.cover_at(Vector2(32.0, 2.0)), TerrainPiece.Cover.NONE, "... gives no cover")
+    _check(not terrain.is_segment_blocked(Vector2(28.0, 2.0), Vector2(36.0, 2.0)), "... nor blocks LoS")
+    _check(terrain.crosses_impassable(Vector2(38.0, 2.0), Vector2(43.0, 2.0)), "impassable area without footprint or cover")
+    _check(not terrain.is_segment_blocked(Vector2(38.0, 2.0), Vector2(43.0, 2.0)), "... and without LoS geometry")
+    _check(not terrain.crosses_impassable(Vector2(28.0, 2.0), Vector2(36.0, 2.0)), "difficult is not impassable")
+    _check_eq(terrain.cover_at(Vector2(0.0, 30.0)), TerrainPiece.Cover.NONE, "cover needs a footprint")
+
+
+func test_squad_cover_majority() -> void:
+    var terrain := _terrain([
+        _piece(_rect_poly(0.0, 0.0, 10.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT),
+        _piece(_rect_poly(20.0, 0.0, 30.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.HEAVY),
+    ])
+    var light := Vector2(5.0, 5.0)
+    var heavy := Vector2(25.0, 5.0)
+    var open := Vector2(15.0, 5.0)
+    var cases := [
+        [[light, light, light, open, open], TerrainPiece.Cover.LIGHT, "3 light, 2 none"],
+        [[heavy, heavy, heavy, light, light, light, light], TerrainPiece.Cover.LIGHT, "3 heavy, 4 light"],
+        [[heavy, heavy, heavy, heavy, light, light, open], TerrainPiece.Cover.HEAVY, "4 heavy, 2 light, 1 none"],
+        [[heavy, heavy, light, light, open], TerrainPiece.Cover.LIGHT, "2 heavy, 2 light, 1 none: tie to light"],
+        [[light, light, open, open], TerrainPiece.Cover.NONE, "2 light, 2 none: tie to none"],
+        [[open, open, light], TerrainPiece.Cover.NONE, "majority none"],
+    ]
+    for c in cases:
+        var points: Array = c[0]
+        var offsets := []
+        for i in points.size():
+            offsets.append(["M%d" % i, null, points[i] - points[0]])
+        var squad := _make_shooter(&"s", P1, points[0], offsets)
+        _check_eq(TerrainRules.squad_cover(squad, terrain), c[1], c[2])
+
+
+func test_squad_cover_changes_with_casualties() -> void:
+    var terrain := _terrain([
+        _piece(_rect_poly(0.0, 0.0, 10.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT),
+        _piece(_rect_poly(20.0, 0.0, 30.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.HEAVY),
+    ])
+    var squad := _squad_at(&"s", P1, [Vector2(25.0, 5.0), Vector2(26.0, 5.0), Vector2(27.0, 5.0), Vector2(5.0, 5.0), Vector2(6.0, 5.0)])
+    _check_eq(TerrainRules.squad_cover(squad, terrain), TerrainPiece.Cover.HEAVY, "3 heavy, 2 light")
+    squad.take_wound(1)
+    squad.take_wound(2)
+    _check_eq(TerrainRules.squad_cover(squad, terrain), TerrainPiece.Cover.LIGHT, "1 heavy, 2 light after casualties")
+    _check_eq(TerrainRules.squad_cover(squad, null), TerrainPiece.Cover.NONE, "no terrain, no cover")
+
+
+func test_majority_armor_save() -> void:
+    var squad := _make_shooter(&"s", P1, Vector2(5.0, 5.0), [["A", null, Vector2.ZERO], ["B", null, Vector2(1, 0)],
+        ["C", null, Vector2(2, 0)], ["D", null, Vector2(3, 0)]])
+    squad.data.profile.armor_save = 4
+    _check_eq(TerrainRules.majority_armor_save(squad), 4, "uniform squad uses its profile")
+    var mixed := SquadData.new()
+    mixed.squad_id = &"m"
+    mixed.player = P1
+    mixed.profile = UnitProfile.new()
+    mixed.profile.armor_save = 4
+    mixed.profile.wounds = 1
+    for override in [-1, -1, 5, 5, 6]:
+        var model := SquadModel.new()
+        model.model_name = "M"
+        model.armor_save_override = override
+        mixed.models.append(model)
+    var state := SquadState.new(mixed, Vector2(5.0, 5.0))
+    _check_eq(TerrainRules.majority_armor_save(state), 5, "4, 4, 5, 5, 6: tie between 4+ and 5+ goes to the worse 5+")
+    state.take_wound(2)
+    _check_eq(TerrainRules.majority_armor_save(state), 4, "after a 5+ model falls: 4, 4, 5, 6 -> 4+")
+    state.take_wound(0)
+    state.take_wound(1)
+    _check_eq(TerrainRules.majority_armor_save(state), 6, "5, 6 tie -> worse 6+")
+    var none := SquadData.new()
+    none.profile = UnitProfile.new()
+    none.profile.armor_save = 6
+    none.profile.wounds = 1
+    for override in [0, -1]:
+        var model := SquadModel.new()
+        model.armor_save_override = override
+        none.models.append(model)
+    _check_eq(TerrainRules.majority_armor_save(SquadState.new(none)), 0, "6+ and no save tie -> no save is worst")
+    state.take_wound(3)
+    state.take_wound(4)
+    _check(state.is_destroyed(), "empty squad")
+    _check_eq(TerrainRules.majority_armor_save(state), 4, "empty squad falls back to its profile safely")
+    _check_eq(TerrainRules.squad_cover(state, _terrain([])), TerrainPiece.Cover.NONE, "empty squad cover is NONE safely")
+
+
+func _check_cost(actual: float, expected: float, message: String) -> void:
+    if not is_equal_approx(actual, expected):
+        _failures.append("%s: expected %s, got %s" % [message, expected, actual])
+
+
+func test_difficult_terrain_movement_cost() -> void:
+    var terrain := _terrain([_piece(_rect_poly(10.0, 0.0, 14.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)])
+    _check_cost(terrain.movement_cost(Vector2(0.0, 5.0), Vector2(6.0, 5.0)), 6.0, "entirely outside")
+    _check_cost(terrain.movement_cost(Vector2(12.0, 5.0), Vector2(18.0, 5.0)), 8.0, "begins inside: 2 inside doubled + 4")
+    _check_cost(terrain.movement_cost(Vector2(6.0, 5.0), Vector2(12.0, 5.0)), 8.0, "ends inside: 4 + 2 doubled")
+    _check_cost(terrain.movement_cost(Vector2(8.0, 5.0), Vector2(16.0, 5.0)), 12.0, "crosses: 4 outside + 4 inside doubled")
+    _check_cost(terrain.movement_cost(Vector2(5.0, 10.0), Vector2(15.0, 10.0)), 10.0, "along the edge is not inside")
+    var two := _terrain([
+        _piece(_rect_poly(10.0, 0.0, 14.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
+        _piece(_rect_poly(20.0, 0.0, 22.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
+        _piece(_rect_poly(14.0, 0.0, 16.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
+    ])
+    _check(two.is_valid(), "three non-overlapping difficult pieces")
+    _check_cost(two.movement_cost(Vector2(8.0, 5.0), Vector2(24.0, 5.0)), 24.0,
+        "touching pieces 10-14 and 14-16 joined, plus 20-22: 16 + 6 + 2")
+
+
+func test_squad_movement_through_difficult_terrain() -> void:
+    var terrain := _terrain([
+        _piece(_rect_poly(10.0, 0.0, 14.0, 8.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
+        _piece(_rect_poly(8.0, 12.0, 10.0, 20.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
+    ])
+    var squad := _squad_at(&"s", P1, [Vector2(6.0, 5.0), Vector2(6.0, 15.0)])
+    squad.begin_turn_movement(6.0)
+    var board := Vector2(48.0, 32.0)
+    _check_cost(MovementRules.movement_cost(squad, Vector2(11.0, 5.0), terrain), 7.0,
+        "leader 5 with 1 difficult = 6; rear model crosses 2 difficult = 7: most restricted counts")
+    _check_eq(MovementRules.validate(squad, Vector2(11.0, 5.0), Phase.MOVEMENT, board, true, terrain),
+        MovementRules.Result.OUT_OF_RANGE, "7 > 6 refused")
+    _check_cost(MovementRules.movement_cost(squad, Vector2(10.0, 5.0), terrain), 6.0, "4 + 2 doubled for the rear model")
+    _check_eq(MovementRules.validate(squad, Vector2(10.0, 5.0), Phase.MOVEMENT, board, true, terrain),
+        MovementRules.Result.OK, "6 allowed")
+    _check_eq(MovementRules.validate(squad, Vector2(11.0, 5.0), Phase.MOVEMENT, board, true, null),
+        MovementRules.Result.OK, "no terrain: plain distance 5")
+
+
+func test_difficult_terrain_with_shaken_allowance() -> void:
+    var terrain := _terrain([_piece(_rect_poly(10.0, 0.0, 20.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)])
+    var squad := _squad_at(&"s", P1, [Vector2(9.0, 5.0)])
+    squad.morale_status = SquadState.MoraleStatus.SHAKEN
+    var tm := TurnManager.new()
+    var battle := BattleState.new()
+    battle.add_squad(squad)
+    var movement := MovementController.new()
+    movement.bind(battle, tm, Vector2(48.0, 32.0))
+    movement.terrain = terrain
+    tm.start_game()
+    _check_eq(squad.movement_allowance, 3.0, "Shaken halves M 6 first")
+    _check_eq(movement.order_move(squad, Vector2(11.5, 5.0)), MovementRules.Result.OUT_OF_RANGE,
+        "1 + 1.5 doubled = 4 > 3")
+    _check_eq(movement.order_move(squad, Vector2(11.0, 5.0)), MovementRules.Result.OK, "1 + 1 doubled = 3: not halved twice")
+    _check_cost(squad.movement_used, 3.0, "cost recorded")
+    _check(squad.movement_complete, "full allowance used")
+    tm.free()
+    movement.free()
+
+
+func test_impassable_terrain_rejects_any_model_path() -> void:
+    var shape := _rect_poly(10.0, 14.0, 11.0, 20.0)
+    var wall := _piece(PackedVector2Array(), shape, TerrainPiece.Cover.NONE, false, shape)
+    var terrain := _terrain([wall])
+    _check(terrain.is_segment_blocked(Vector2(6.0, 15.0), Vector2(14.0, 15.0)), "a wall with matching polygons blocks sight")
+    var squad := _squad_at(&"s", P1, [Vector2(6.0, 5.0), Vector2(6.0, 15.0)])
+    squad.begin_turn_movement(10.0)
+    var board := Vector2(48.0, 32.0)
+    _check_eq(MovementRules.validate(squad, Vector2(14.0, 5.0), Phase.MOVEMENT, board, true, terrain),
+        MovementRules.Result.IMPASSABLE, "the leader's path is clear but the rear model's crosses the wall")
+    _check_eq(MovementRules.validate(squad, Vector2(8.0, 5.0), Phase.MOVEMENT, board, true, terrain),
+        MovementRules.Result.OK, "stopping short of the wall")
+    _check_eq(MovementRules.validate(squad, Vector2(6.0, 4.0), Phase.MOVEMENT, board, true, terrain),
+        MovementRules.Result.OK, "moving away")
+    _check(not terrain.crosses_impassable(Vector2(8.0, 16.0), Vector2(12.0, 12.0)), "grazing a corner only is not crossing")
+    _check(not terrain.crosses_impassable(Vector2(10.0, 12.0), Vector2(10.0, 22.0)), "running along an edge is not crossing")
+    _check(not terrain.crosses_impassable(Vector2(6.0, 17.0), Vector2(10.0, 17.0)), "stopping on the edge is not crossing")
+    var edge_squad := _squad_at(&"e", P1, [Vector2(6.0, 17.0)])
+    edge_squad.begin_turn_movement(6.0)
+    _check_eq(MovementRules.validate(edge_squad, Vector2(10.0, 17.0), Phase.MOVEMENT, board, true, terrain),
+        MovementRules.Result.OK, "a move ending in contact with the wall is legal")
+
+
+func test_impassable_geometry_is_independent() -> void:
+    var los_only := _piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 11.0, 30.0))
+    var ruin := _piece(_rect_poly(20.0, 0.0, 24.0, 30.0), _rect_poly(20.0, 0.0, 24.0, 30.0), TerrainPiece.Cover.HEAVY, true)
+    var barricade := _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(30.0, 0.0, 31.0, 30.0))
+    var split := _piece(PackedVector2Array(), _rect_poly(40.0, 0.0, 42.0, 30.0), TerrainPiece.Cover.NONE, false,
+        _rect_poly(40.0, 0.0, 42.0, 10.0))
+    var terrain := _terrain([los_only, ruin, barricade, split])
+    _check(terrain.is_segment_blocked(Vector2(8.0, 5.0), Vector2(13.0, 5.0)), "LoS blocker blocks sight...")
+    _check(not terrain.crosses_impassable(Vector2(8.0, 5.0), Vector2(13.0, 5.0)), "... but not movement without impassable geometry")
+    _check(not terrain.crosses_impassable(Vector2(18.0, 5.0), Vector2(26.0, 5.0)),
+        "a footprint (even one blocking LoS) without impassable geometry is traversable")
+    _check(terrain.crosses_impassable(Vector2(28.0, 5.0), Vector2(33.0, 5.0)), "impassable area without LoS geometry blocks movement")
+    _check(not terrain.is_segment_blocked(Vector2(28.0, 5.0), Vector2(33.0, 5.0)), "... but not sight")
+    _check(terrain.crosses_impassable(Vector2(38.0, 5.0), Vector2(44.0, 5.0)), "impassable part of a split piece")
+    _check(not terrain.crosses_impassable(Vector2(38.0, 20.0), Vector2(44.0, 20.0)),
+        "impassable area differs from the LoS polygon: passable where only sight is blocked")
+    _check(terrain.is_segment_blocked(Vector2(38.0, 20.0), Vector2(44.0, 20.0)), "... though sight is still blocked there")
+    var squad := _squad_at(&"s", P1, [Vector2(6.0, 5.0)])
+    squad.begin_turn_movement(10.0)
+    _check_eq(MovementRules.validate(squad, Vector2(14.0, 5.0), Phase.MOVEMENT, Vector2(48.0, 32.0), true, terrain),
+        MovementRules.Result.OK, "a squad may move through a LoS-only wall")
+
+
+func test_multiple_orders_measured_from_turn_start_with_terrain() -> void:
+    var terrain := _terrain([_piece(_rect_poly(10.0, 0.0, 14.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)])
+    var squad := _squad_at(&"s", P1, [Vector2(8.0, 5.0)])
+    var tm := TurnManager.new()
+    var battle := BattleState.new()
+    battle.add_squad(squad)
+    var movement := MovementController.new()
+    movement.bind(battle, tm, Vector2(48.0, 32.0))
+    movement.terrain = terrain
+    tm.start_game()
+    _check_eq(movement.order_move(squad, Vector2(11.0, 5.0)), MovementRules.Result.OK, "2 + 1 doubled = 4")
+    _check_cost(squad.movement_used, 4.0, "cost recorded")
+    _check_eq(movement.order_move(squad, Vector2(8.0, 1.0)), MovementRules.Result.OK,
+        "second order costed from the turn start: straight 4 north, outside the mud")
+    _check_cost(squad.movement_used, 4.0, "cost of the new position from the turn start, not a running total")
+    tm.free()
+    movement.free()
+
+
+func test_fallback_ignores_terrain() -> void:
+    var broken := _squad(&"p1_b", P1, Vector2(10.0, 12.0), 1)
+    var enemy := _squad(&"p2_e", P2, Vector2(40.0, 16.0), 1)
+    var f := _morale_fixture([broken, enemy], [6, 6])
+    var terrain := _terrain([
+        _piece(_rect_poly(5.0, 0.0, 9.0, 30.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
+        _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(6.0, 0.0, 6.5, 30.0)),
+    ])
+    f.movement.terrain = terrain
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    f.activation.activate(broken)
+    _check_eq(broken.board_position, Vector2(4.0, 12.0),
+        "full 6 west, through difficult terrain and an impassable wall")
+    _free_morale_fixture(f)
+
+
+func test_line_of_sight_geometry_rules() -> void:
+    var los := LineOfSight.new(_terrain([_piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 14.0, 4.0))]))
+    _check(los.has_line_of_sight(Vector2(0.0, 10.0), Vector2(20.0, 10.0)), "clear segment")
+    _check(not los.has_line_of_sight(Vector2(0.0, 2.0), Vector2(20.0, 2.0)), "crossing the blocker")
+    _check(los.has_line_of_sight(Vector2(12.0, 6.0), Vector2(16.0, 2.0)), "touching only a vertex")
+    _check(los.has_line_of_sight(Vector2(8.0, 4.0), Vector2(16.0, 4.0)), "running along an edge")
+    _check(los.has_line_of_sight(Vector2(12.0, 2.0), Vector2(20.0, 2.0)), "origin inside sees out")
+    _check(los.has_line_of_sight(Vector2(0.0, 2.0), Vector2(12.0, 2.0)), "target inside can be seen")
+    _check(los.has_line_of_sight(Vector2(11.0, 1.0), Vector2(13.0, 3.0)), "both inside the same blocker")
+    _check(not los.has_line_of_sight(Vector2(0.0, 2.0), Vector2(20.0, 2.0)), "target beyond is hidden")
+    var overlapping := LineOfSight.new(_terrain([
+        _piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 14.0, 4.0)),
+        _piece(PackedVector2Array(), _rect_poly(12.0, 0.0, 16.0, 4.0)),
+    ]))
+    _check(not overlapping.has_line_of_sight(Vector2(11.0, 2.0), Vector2(20.0, 2.0)),
+        "inside one blocker, looking through an overlapping second one")
+    _check(overlapping.has_line_of_sight(Vector2(13.0, 2.0), Vector2(20.0, 2.0)), "inside both: sees out")
+    var u_shape := PackedVector2Array([Vector2(0, 0), Vector2(10, 0), Vector2(10, 6), Vector2(8, 6), Vector2(8, 2),
+        Vector2(2, 2), Vector2(2, 6), Vector2(0, 6)])
+    var concave := LineOfSight.new(_terrain([_piece(PackedVector2Array(), u_shape)]))
+    _check(not concave.has_line_of_sight(Vector2(1.0, 4.0), Vector2(12.0, 4.0)),
+        "inside one arm of a U, the other arm still blocks")
+    _check(concave.has_line_of_sight(Vector2(1.0, 4.0), Vector2(5.0, 4.0)), "inside one arm, seeing into the gap")
+
+
+func test_line_of_sight_blocker_boundary_endpoints() -> void:
+    var los := LineOfSight.new(_terrain([_piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 11.0, 10.0))]))
+    _check(not los.has_line_of_sight(Vector2(9.0, 5.0), Vector2(20.0, 5.0)), "shooter clear of the wall: blocked")
+    _check(not los.has_line_of_sight(Vector2(10.0, 5.0), Vector2(20.0, 5.0)), "shooter exactly on the near boundary: blocked")
+    _check(not los.has_line_of_sight(Vector2(9.9995, 5.0), Vector2(20.0, 5.0)), "shooter 0.0005 outside the boundary: blocked")
+    _check(not los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(11.0, 5.0)), "target exactly on the far boundary: hidden")
+    _check(not los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(11.0005, 5.0)), "target hugging the far side: hidden")
+    _check(not los.has_line_of_sight(Vector2(10.0, 5.0), Vector2(11.0, 5.0)), "models on opposite faces: hidden")
+    _check(los.has_line_of_sight(Vector2(10.5, 5.0), Vector2(20.0, 5.0)), "shooter strictly inside sees out")
+    _check(los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(10.5, 5.0)), "target strictly inside can be seen")
+    _check(los.has_line_of_sight(Vector2(10.5, 2.0), Vector2(10.5, 8.0)), "both strictly inside the same blocker")
+    _check(los.has_line_of_sight(Vector2(10.0, 12.0), Vector2(10.0, 20.0)), "on the boundary, looking away from the wall")
+    var nested := LineOfSight.new(_terrain([
+        _piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 20.0, 10.0)),
+        _piece(PackedVector2Array(), _rect_poly(14.0, 0.0, 15.0, 10.0)),
+    ]))
+    _check(nested.has_line_of_sight(Vector2(11.0, 5.0), Vector2(13.0, 5.0)), "both inside the same blocker, nothing between")
+    _check(not nested.has_line_of_sight(Vector2(11.0, 5.0), Vector2(18.0, 5.0)),
+        "both inside the same blocker, a second blocker between them still blocks")
+    var walls := LineOfSight.new(_terrain([
+        _piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 11.0, 10.0)),
+        _piece(PackedVector2Array(), _rect_poly(14.0, 0.0, 15.0, 10.0)),
+    ]))
+    _check(not walls.has_line_of_sight(Vector2(10.5, 5.0), Vector2(20.0, 5.0)),
+        "inside one wall, a separate second wall still blocks")
+
+func test_partially_visible_target_squad() -> void:
+    var los := LineOfSight.new(_terrain([_piece(PackedVector2Array(), _rect_poly(14.0, 0.0, 16.0, 6.0))]))
+    var firing := _squad_at(&"f", P1, [Vector2(10.0, 5.0), Vector2(10.0, 15.0)])
+    var target := _squad_at(&"t", P2, [Vector2(20.0, 5.0), Vector2(20.0, 15.0)])
+    _check(ShootingRules.has_visible_target(firing, target, los), "the squad is a valid target")
+    var result := ShootingRules.resolve(firing, target, los, ScriptedDice.new([6, 6]))
+    _check_eq(result.model_results.map(func(r): return r.eligibility),
+        [CombatResult.Eligibility.ELIGIBLE, CombatResult.Eligibility.ELIGIBLE],
+        "each firer sees at least one target model (the rear one, across the open)")
+    var walled := LineOfSight.new(_terrain([_piece(PackedVector2Array(), _rect_poly(14.0, 0.0, 16.0, 30.0))]))
+    _check(not ShootingRules.has_visible_target(firing, target, walled), "fully hidden squad")
+    var half := LineOfSight.new(_terrain([_piece(PackedVector2Array(), _rect_poly(12.0, -10.0, 14.0, 4.0))]))
+    var shooters := _squad_at(&"s", P1, [Vector2(10.0, 0.0), Vector2(10.0, 20.0)])
+    var targets := _squad_at(&"u", P2, [Vector2(16.0, 0.0)])
+    var partial := ShootingRules.resolve(shooters, targets, half, ScriptedDice.new([6]))
+    _check_eq(partial.model_results.map(func(r): return r.eligibility),
+        [CombatResult.Eligibility.NO_LINE_OF_SIGHT, CombatResult.Eligibility.ELIGIBLE],
+        "a firer that cannot see adds no attacks; the other still fires")
+
+
+func test_no_visible_target_refused_without_spending_activation() -> void:
+    var firing := _squad_at(&"p1_f", P1, [Vector2(10.0, 5.0)])
+    var target := _squad_at(&"p2_t", P2, [Vector2(20.0, 5.0), Vector2(20.0, 7.0)])
+    var f := _morale_fixture([firing, target], [])
+    var terrain := _terrain([_piece(PackedVector2Array(), _rect_poly(14.0, 0.0, 16.0, 30.0))])
+    f.shooting.set_terrain(terrain)
+    _advance_to(f, Phase.SHOOTING, 1)
+    f.activation.activate(firing)
+    var rejected := []
+    f.shooting.shot_rejected.connect(func(_f, _t, r): rejected.append(r))
+    _check_eq(f.shooting.order_shot(firing, target), ShootingRules.OrderResult.NO_VISIBLE_TARGET, "refused")
+    _check_eq(rejected, [ShootingRules.OrderResult.NO_VISIBLE_TARGET], "reason reported")
+    _check(f.activation.is_active_squad(firing), "activation not spent")
+    f.shooting.set_terrain(_terrain([]))
+    f.shooting.dice = ScriptedDice.new([6, 6])
+    _check_eq(f.shooting.order_shot(firing, target), ShootingRules.OrderResult.OK, "visible: allowed")
+    _free_morale_fixture(f)
+
+
+func test_visible_but_out_of_range_spends_activation() -> void:
+    var firing := _squad_at(&"p1_f", P1, [Vector2(2.0, 5.0)])
+    var target := _squad_at(&"p2_t", P2, [Vector2(45.0, 5.0)])
+    var f := _morale_fixture([firing, target], [])
+    f.shooting.set_terrain(_terrain([_piece(PackedVector2Array(), _rect_poly(20.0, 10.0, 22.0, 30.0))]))
+    _advance_to(f, Phase.SHOOTING, 1)
+    f.activation.activate(firing)
+    f.shooting.dice = ScriptedDice.new([])
+    var results := []
+    f.shooting.shot_resolved.connect(func(r): results.append(r))
+    _check(ShootingRules.has_visible_target(firing, target, f.shooting.line_of_sight), "target visible past the blocker")
+    _check_eq(f.shooting.order_shot(firing, target), ShootingRules.OrderResult.OK, "visible: order accepted")
+    _check_eq(results[0].model_results[0].eligibility, CombatResult.Eligibility.OUT_OF_RANGE, "43 away, rifle range 30")
+    _check_eq(results[0].get_total_attacks(), 0, "zero attacks")
+    _check(f.activation.has_activated(firing), "activation spent")
+    _check_eq(f.activation.get_active_player(), P2, "control passes")
+    _free_morale_fixture(f)
+
+
+func test_unseen_models_can_take_allocated_wounds() -> void:
+    var firing := _squad_at(&"p1_f", P1, [Vector2(10.0, 0.0)])
+    var target := _squad_at(&"p2_t", P2, [Vector2(20.0, 0.0), Vector2(20.0, 20.0)])
+    var f := _morale_fixture([firing, target], [])
+    f.shooting.set_terrain(_terrain([_piece(PackedVector2Array(), _rect_poly(14.0, 5.0, 16.0, 30.0))]))
+    _advance_to(f, Phase.SHOOTING, 1)
+    f.activation.activate(firing)
+    f.shooting.dice = ScriptedDice.new([6, 6])
+    f.shooting.order_shot(firing, target)
+    _check_eq(f.shooting.get_wounds_left(), 1, "one unsaved wound")
+    _check_eq(f.shooting.allocate_wound(1), DamageRules.AllocationResult.OK, "allocated to the hidden rear model")
+    _check(target.get_model(1).removed, "the hidden model is the casualty")
+    _free_morale_fixture(f)
+
+
+func test_cover_save_targets() -> void:
+    _check_eq(DamageRules.save_target(4, 0, 0), 4, "no cover")
+    _check_eq(DamageRules.save_target(4, 0, 1), 3, "light or heavy cover: +1 to the save")
+    _check_eq(DamageRules.save_target(4, 1, 1), 4, "AP1 and cover cancel")
+    _check_eq(DamageRules.save_target(0, 0, 0), 0, "no armour, no cover: no save")
+    _check_eq(DamageRules.save_target(0, 0, 1), 6, "cover gives 6+ to a squad without armour")
+    _check_eq(DamageRules.save_target(0, 1, 1), 7, "... but AP1 removes it")
+    _check(not DamageRules.can_be_saved(7), "worse than 6+ is impossible")
+    _check_eq(DamageRules.save_target(2, 0, 1), 2, "best save capped at 2+")
+    _check_eq(DamageRules.save_target(3, 0, 1), 2, "3+ in cover is 2+")
+    _check(not DamageRules.is_saved(1, 2), "natural 1 fails even on 2+")
+
+
+func test_cover_modifiers_in_combat() -> void:
+    var terrain := _terrain([
+        _piece(_rect_poly(18.0, 0.0, 22.0, 4.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT),
+        _piece(_rect_poly(18.0, 10.0, 22.0, 14.0), PackedVector2Array(), TerrainPiece.Cover.HEAVY),
+    ])
+    var los := LineOfSight.new(terrain)
+    var firing := _squad_at(&"f", P1, [Vector2(10.0, 7.0)])
+    var open := _squad_at(&"o", P2, [Vector2(20.0, 7.0)])
+    var light := _squad_at(&"l", P2, [Vector2(20.0, 2.0)])
+    var heavy := _squad_at(&"h", P2, [Vector2(20.0, 12.0)])
+    for squad in [open, light, heavy]:
+        squad.data.profile.armor_save = 4
+    var r := ShootingRules.resolve(firing, open, los, ScriptedDice.new([4]), terrain)
+    _check_eq([r.target_cover, r.hit_target, r.get_hits()], [TerrainPiece.Cover.NONE, 4, 1], "open: hits on 4+")
+    DamageRules.resolve_wounds_and_saves(r, ScriptedDice.new([6, 4]))
+    _check_eq(r.model_results[0].save_target, 4, "open: 4+ save")
+    r = ShootingRules.resolve(firing, light, los, ScriptedDice.new([4]), terrain)
+    _check_eq([r.target_cover, r.hit_target, r.get_hits()], [TerrainPiece.Cover.LIGHT, 4, 1], "light: no hit penalty")
+    DamageRules.resolve_wounds_and_saves(r, ScriptedDice.new([6, 3]))
+    _check_eq([r.model_results[0].save_target, r.get_saves()], [3, 1], "light: 3+ save, 3 saves")
+    r = ShootingRules.resolve(firing, heavy, los, ScriptedDice.new([4]), terrain)
+    _check_eq([r.target_cover, r.hit_target, r.get_hits()], [TerrainPiece.Cover.HEAVY, 5, 0], "heavy: -1 to hit, 4 misses")
+    firing.morale_status = SquadState.MoraleStatus.SHAKEN
+    r = ShootingRules.resolve(firing, heavy, los, ScriptedDice.new([6]), terrain)
+    _check_eq([r.hit_target, r.get_hits()], [6, 1], "Shaken and heavy cover stack: 6+")
+    firing.data.profile.quality = 5
+    r = ShootingRules.resolve(firing, heavy, los, ScriptedDice.new([6]), terrain)
+    _check_eq([r.hit_target, r.get_hits()], [7, 0], "Quality 5 + Shaken + heavy = 7+: cannot hit")
+    firing.morale_status = SquadState.MoraleStatus.STEADY
+    firing.data.profile.quality = 4
+    var melee := AssaultRules.resolve(firing, heavy, ScriptedDice.new([4]), terrain)
+    _check_eq([melee.target_cover, melee.hit_target, melee.get_hits()], [TerrainPiece.Cover.HEAVY, 5, 0],
+        "heavy cover applies in melee")
+    DamageRules.resolve_wounds_and_saves(melee, ScriptedDice.new([]))
+    _check_eq(CombatModifiers.hit_target(firing, TerrainPiece.Cover.HEAVY), 5, "shared hit modifier")
+
+
+func test_saves_before_allocation_in_cover() -> void:
+    var firing := _squad_at(&"p1_f", P1, [Vector2(10.0, 5.0)])
+    firing.data.models[0].weapon.attacks = 3
+    var target := _squad_at(&"p2_t", P2, [Vector2(20.0, 5.0), Vector2(20.0, 6.0), Vector2(20.0, 7.0)])
+    target.data.profile.armor_save = 5
+    var f := _morale_fixture([firing, target], [])
+    f.shooting.set_terrain(_terrain([_piece(_rect_poly(18.0, 0.0, 22.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT)]))
+    _advance_to(f, Phase.SHOOTING, 1)
+    f.activation.activate(firing)
+    # Three hits, three wounds; saves at 4+ (5+ with light cover): 4 saves, 3 and 1 fail.
+    f.shooting.dice = ScriptedDice.new([6, 6, 6, 6, 6, 6, 4, 3, 1])
+    var prompts := []
+    f.shooting.allocation_required.connect(func(r, left): prompts.append([r.get_wounds(), r.get_saves(), left]))
+    f.shooting.order_shot(firing, target)
+    _check_eq(prompts, [[3, 1, 2]], "saves rolled before allocation; only 2 unsaved wounds to allocate")
+    _free_morale_fixture(f)
+
+
+func test_terrain_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var layer: TerrainLayer = main.get_node("GameBoard/TerrainLayer")
+    var terrain: TerrainMap = main.terrain
+    _check(layer != null and layer.get_index() < main.get_node("GameBoard/MovementOverlay").get_index(),
+        "terrain layer drawn beneath the overlay and tokens")
+    var placed := terrain.get_placed()
+    _check(terrain.is_valid(), "the default terrain has no overlapping footprints: %s" % terrain.errors)
+    _check_eq(placed.size(), 5, "five placed pieces")
+    var kinds := {}
+    for p in placed:
+        var piece: TerrainPiece = p.piece
+        if piece.cover == TerrainPiece.Cover.LIGHT and not piece.footprint.is_empty():
+            kinds["light"] = true
+        if piece.cover == TerrainPiece.Cover.HEAVY and not piece.footprint.is_empty():
+            kinds["heavy"] = true
+        if piece.difficult and not piece.footprint.is_empty():
+            kinds["difficult"] = true
+        if piece.footprint.is_empty() and not piece.los_blocker.is_empty():
+            kinds["blocker_only"] = true
+        if not piece.footprint.is_empty() and not piece.los_blocker.is_empty():
+            kinds["footprint_and_blocker"] = true
+    _check_eq(kinds.size(), 5, "light, heavy, difficult, blocker-only, and footprint-plus-blocker terrain present")
+    var walls := placed.filter(func(p): return p.piece.terrain_name == "Wall")
+    _check(walls.size() == 1 and walls[0].impassable_area == walls[0].los_blocker,
+        "the Wall's impassable area matches its LoS geometry")
+    _check_eq(placed.filter(func(p): return not p.impassable_area.is_empty()).size(), 1, "only the Wall is impassable")
+    for squad in main.battle.get_squads():
+        for model in squad.get_living_models():
+            _check_eq(terrain.pieces_at(squad.get_model_position(model)), [], "%s starts clear of terrain" % squad.squad_id)
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    _check(main.shooting.line_of_sight.has_line_of_sight(line.board_position, raider.board_position),
+        "the starting squads can see each other")
+    var info: SquadInfoPanel = main.get_node("HUD/SquadInfoPanel")
+    _click(main.get_node("GameBoard/Squads").get_token(&"p1_line_squad").global_position)
+    _check_eq(info.cover_label.text, "Cover: None, Sv 4+", "info panel shows cover and armour")
+    line.board_position = Vector2(12.0, 6.0)
+    _check_eq(info.cover_label.text, "Cover: Light, Sv 4+", "updates when the squad stands in the scrubland")
+    main.queue_free()
+    await process_frame
+
+
+func test_shooting_mixed_terrain_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    var layer: SquadLayer = main.get_node("GameBoard/Squads")
+    var activation: ActivationController = main.get_node("ActivationController")
+    var allocation: AllocationPanel = main.get_node("HUD/AllocationPanel")
+    var feedback: Label = main.get_node("HUD/OrderFeedback")
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    # Raider Boss and one Raider in the crater (heavy), the other Raider outside.
+    raider.board_position = Vector2(10.5, 26.5)
+    _check_eq(TerrainRules.cover_counts(raider, main.terrain), [1, 0, 2], "2 heavy, 1 none")
+    _complete_phase(activation, main.battle, main.turn_manager)
+    # Hits on 5+ (Q4 + heavy): Sergeant 5; Troopers 4, 6; Gunner 6, 6, 1.
+    # Wounds: Sergeant (S3 vs T3, 4+) 4; Trooper 3; Gunner (S5, 3+) 3, 2.
+    # Saves: armour 5+ with cover 4+: Sergeant 5 saves; Gunner (AP1, 5+) 2 fails.
+    main.shooting.dice = ScriptedDice.new([5, 4, 6, 6, 6, 1, 4, 5, 3, 3, 2, 2])
+    _click(layer.get_token(&"p1_line_squad").global_position)
+    main.get_node("HUD/ActivationPanel").action_button.pressed.emit()
+    _right_click(layer.get_token(&"p2_raider_squad").global_position)
+    _check(feedback.text.contains("Target: Heavy cover, armour 5+; hits on 5+"), "cover and armour reported")
+    _check(feedback.text.contains("Attacks 6: 4 hit, 2 miss"), "heavy cover hit penalty")
+    _check(feedback.text.contains("Wounds 2: 1 saved, 1 unsaved"), "saves include the cover bonus")
+    _check(feedback.text.contains("Sergeant: 1/1 hit, 1 wnd (4+), 1 saved (4+)"), "save target 4+ in cover")
+    _check(feedback.text.contains("Gunner: 2/3 hit, 1 wnd (3+), 0 saved (5+)"), "AP1 and cover")
+    _check_eq(allocation.title_label.text, "Player 2: allocate 1 wound to Raider Squad", "only unsaved wounds allocated")
+    allocation.get_button(2).pressed.emit()
+    _check(raider.get_model(2).removed, "defender chose the Raider outside cover")
+    _check_eq(TerrainRules.squad_cover(raider, main.terrain), TerrainPiece.Cover.HEAVY, "cover recalculated: 2 heavy")
+    main.queue_free()
+    await process_frame
+
+
+func test_assault_against_squad_in_cover() -> void:
+    var attacker := _squad_at(&"p1_a", P1, [Vector2(8.0, 5.0), Vector2(8.0, 6.0)])
+    var target := _squad_at(&"p2_t", P2, [Vector2(9.5, 5.0), Vector2(9.5, 6.0)])
+    target.data.profile.armor_save = 5
+    var f := _morale_fixture([attacker, target], [])
+    f.assault.terrain = _terrain([_piece(_rect_poly(9.0, 0.0, 14.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.HEAVY)])
+    _advance_to(f, Phase.ASSAULT, 1)
+    f.activation.activate(attacker)
+    # Hits on 5+ (heavy): 5, 4. Wound (S3 vs T0, 2+): 6. Save 4+ (5+ in cover): 3 fails.
+    f.assault.dice = ScriptedDice.new([5, 4, 6, 3])
+    var results := []
+    f.assault.assault_resolved.connect(func(r): results.append(r))
+    f.assault.order_assault(attacker, target)
+    var pending: CombatResult = f.assault.allocator.get_pending_result()
+    _check_eq([pending.target_cover, pending.hit_target, pending.get_hits()], [TerrainPiece.Cover.HEAVY, 5, 1], "heavy cover in melee")
+    _check_eq(pending.model_results[0].save_target, 4, "cover improves the save in melee")
+    f.assault.allocator.allocate_wound(1)
+    _check_eq(results.size(), 1, "assault completes after allocation")
+    _check(target.lost_models_since_morale, "morale-loss tracking intact")
+    _free_morale_fixture(f)
 
 
 func test_unit_profile_resource() -> void:

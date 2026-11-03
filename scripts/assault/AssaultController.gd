@@ -10,6 +10,8 @@ signal assault_resolved(result: CombatResult)
 signal assault_rejected(attacker: SquadState, target: SquadState, result: AssaultRules.OrderResult)
 
 var dice := DiceRoller.new()
+## Battlefield terrain, for the defender's cover.
+var terrain: TerrainMap
 ## Shared with the ShootingController; created here if none is supplied.
 var allocator: CasualtyAllocator
 
@@ -38,7 +40,7 @@ func order_assault(attacker: SquadState, target: SquadState) -> AssaultRules.Ord
     if result != AssaultRules.OrderResult.OK:
         assault_rejected.emit(attacker, target, result)
         return result
-    var outcome := AssaultRules.resolve(attacker, target, dice)
+    var outcome := AssaultRules.resolve(attacker, target, dice, terrain)
     DamageRules.resolve_wounds_and_saves(outcome, dice)
     allocator.begin(outcome)
     return result
