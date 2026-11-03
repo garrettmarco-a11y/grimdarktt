@@ -3649,3 +3649,113 @@ func test_main_scene_wiring() -> void:
         _check_eq(label.text, "Turn 2 - Movement", "banner text after a full turn (Morale has no tests yet)")
     main.queue_free()
     await process_frame
+
+
+# --- Task 2.2: model bases and placement ---
+
+func test_model_base_contact_and_overlap() -> void:
+    var line: SquadData = load("res://data/squads/p1_line_squad.tres")
+    _check_eq(line.models[0].base_radius, 0.5, "models default to a 0.5 base radius")
+    var squad := _squad_at(&"s", P1, [Vector2(10.0, 10.0)])
+    _check_eq(squad.get_leader().get_base_radius(), 0.5, "ModelState reads its base radius")
+    var touching_rejected := 0
+    var overlap_missed := 0
+    for i in 24:
+        var direction := Vector2.RIGHT.rotated(deg_to_rad(15.0 * i + 0.37))
+        var a := Vector2(20.3, 15.7)
+        if ModelPlacement.bases_overlap(a, 0.5, a + direction * 1.0, 0.5):
+            touching_rejected += 1
+        if not ModelPlacement.bases_overlap(a, 0.5, a + direction * 0.99, 0.5):
+            overlap_missed += 1
+    _check_eq(touching_rejected, 0, "bases exactly in contact never overlap, at any angle")
+    _check_eq(overlap_missed, 0, "bases 0.01 inside contact always overlap")
+    _check(not ModelPlacement.bases_overlap(Vector2.ZERO, 0.5, Vector2(1.25, 0.0), 0.75), "different radii in contact")
+    _check(ModelPlacement.bases_overlap(Vector2.ZERO, 0.5, Vector2(1.2, 0.0), 0.75), "different radii overlapping")
+    _check(ModelPlacement.path_hits_base(Vector2(0.0, 0.0), Vector2(10.0, 0.0), 0.5, Vector2(5.0, 0.5), 0.5),
+        "a path through another base is blocked")
+    _check(not ModelPlacement.path_hits_base(Vector2(0.0, 0.0), Vector2(10.0, 0.0), 0.5, Vector2(5.0, 1.0), 0.5),
+        "a path grazing another base in contact is clear")
+    _check(not ModelPlacement.path_hits_base(Vector2(0.0, 0.0), Vector2(3.9, 0.0), 0.5, Vector2(5.0, 0.0), 0.5),
+        "a path stopping short of another base is clear")
+
+
+func test_model_base_on_board() -> void:
+    var board := Vector2(48.0, 32.0)
+    _check(ModelPlacement.base_on_board(Vector2(0.5, 0.5), 0.5, board), "base touching two edges is on the board")
+    _check(ModelPlacement.base_on_board(Vector2(47.5, 31.5), 0.5, board), "far corner, touching")
+    _check(not ModelPlacement.base_on_board(Vector2(0.4, 10.0), 0.5, board), "base hanging over the left edge")
+    _check(not ModelPlacement.base_on_board(Vector2(10.0, 31.6), 0.5, board), "base hanging over the bottom edge")
+
+
+func test_model_base_against_impassable_terrain() -> void:
+    var wall := _rect_poly(10.0, 0.0, 10.6, 20.0)
+    var terrain := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, wall)])
+    _check(not terrain.base_crosses_impassable(Vector2(9.5, 5.0), Vector2(9.5, 5.0), 0.5), "base touching the wall is legal")
+    _check(terrain.base_crosses_impassable(Vector2(9.6, 5.0), Vector2(9.6, 5.0), 0.5), "base overlapping the wall is not")
+    _check(terrain.base_crosses_impassable(Vector2(10.3, 5.0), Vector2(10.3, 5.0), 0.5), "base centred in the wall is not")
+    _check(terrain.base_crosses_impassable(Vector2(5.0, 5.0), Vector2(15.0, 5.0), 0.5), "a path cannot tunnel through a thin wall")
+    _check(not terrain.base_crosses_impassable(Vector2(5.0, 5.0), Vector2(9.5, 5.0), 0.5), "a path ending in contact is legal")
+    _check(not terrain.base_crosses_impassable(Vector2(5.0, 20.5), Vector2(15.0, 20.5), 0.5), "a path sliding past the wall's end in contact")
+    _check(terrain.base_crosses_impassable(Vector2(5.0, 20.4), Vector2(15.0, 20.4), 0.5),
+        "a path clipping the wall's end with the base (centre clear) is blocked")
+    _check(not terrain.crosses_impassable(Vector2(5.0, 20.4), Vector2(15.0, 20.4)), "... although the centre path alone is clear")
+    var rotated := TerrainMap.new()
+    rotated.add(_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(-3.0, -0.3, 3.0, 0.3)),
+        Vector2(24.0, 16.0), deg_to_rad(30.0))
+    var normal := Vector2(0.0, 1.0).rotated(deg_to_rad(30.0))
+    _check(not rotated.base_crosses_impassable(Vector2(24.0, 16.0) + normal * 0.8, Vector2(24.0, 16.0) + normal * 0.8, 0.5),
+        "rotated wall: base in contact with its face")
+    _check(rotated.base_crosses_impassable(Vector2(24.0, 16.0) + normal * 0.79, Vector2(24.0, 16.0) + normal * 0.79, 0.5),
+        "rotated wall: base 0.01 into its face")
+
+
+func test_layout_validation() -> void:
+    var board := Vector2(48.0, 32.0)
+    var friendly := _squad_at(&"a", P1, [Vector2(10.0, 10.0), Vector2(11.0, 10.0)])
+    _check(ModelPlacement.layout_errors([friendly], board).is_empty(), "friendly models in contact are legal")
+    var cramped := _squad_at(&"b", P1, [Vector2(10.0, 10.0), Vector2(10.9, 10.0)])
+    var errors := ModelPlacement.layout_errors([cramped], board)
+    _check_eq(errors.size(), 1, "two overlapping friendly models: one error")
+    _check(errors[0].contains("b M0 (#0)") and errors[0].contains("b M1 (#1)"), "the error names both models: %s" % errors[0])
+    var mine := _squad_at(&"p1", P1, [Vector2(20.0, 10.0)])
+    var theirs := _squad_at(&"p2", P2, [Vector2(20.5, 10.0)])
+    _check_eq(ModelPlacement.find_overlaps([mine, theirs]).size(), 1, "opposing models overlapping are found")
+    theirs.board_position = Vector2(21.0, 10.0)
+    _check(ModelPlacement.find_overlaps([mine, theirs]).is_empty(), "opposing models in contact are legal")
+    var edge := _squad_at(&"e", P1, [Vector2(0.3, 10.0)])
+    _check_eq(ModelPlacement.layout_errors([edge], board).size(), 1, "a base off the board edge is an error")
+    var terrain := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(30.0, 0.0, 31.0, 20.0))])
+    var stuck := _squad_at(&"t", P1, [Vector2(30.2, 10.0)])
+    _check_eq(ModelPlacement.layout_errors([stuck], board, terrain).size(), 1, "a base on impassable terrain is an error")
+    var casualty := _squad_at(&"c", P1, [Vector2(10.0, 10.0), Vector2(10.5, 10.0)])
+    casualty.take_wound(1)
+    _check(ModelPlacement.layout_errors([casualty], board).is_empty(), "a removed model occupies no space")
+
+
+func test_invalid_starting_layout_rejected_in_main() -> void:
+    var main: Node = load("res://scenes/core/Main.tscn").instantiate()
+    var setups: Array[SquadSetup] = []
+    for position in [Vector2(12.0, 16.0), Vector2(12.5, 16.0)]:
+        var setup := SquadSetup.new()
+        setup.squad = load("res://data/squads/p1_line_squad.tres") if setups.is_empty() else load("res://data/squads/p2_raider_squad.tres")
+        setup.start_position = position
+        setups.append(setup)
+    main.squad_setups = setups
+    print("        (the next error is expected)")
+    root.add_child(main)
+    await process_frame
+    _check(not main.layout_errors.is_empty(), "the overlapping layout is reported: %s" % [main.layout_errors])
+    _check(main.battle.get_squads().is_empty(), "no squad is placed from an invalid layout")
+    _check_eq(main.turn_manager.turn_number, 0, "the game does not start")
+    _check(main.hud.order_feedback.text.begins_with("Invalid starting layout"), "the HUD says why")
+    main.queue_free()
+    await process_frame
+
+
+func test_default_starting_layout_is_valid() -> void:
+    var main: Node = await _load_main()
+    _check(main.layout_errors.is_empty(), "the main scene's squads are legally placed: %s" % [main.layout_errors])
+    _check_eq(main.battle.get_squads().size(), 2, "both squads placed")
+    _check(ModelPlacement.find_overlaps(main.battle.get_squads()).is_empty(), "no overlapping bases")
+    main.queue_free()
+    await process_frame

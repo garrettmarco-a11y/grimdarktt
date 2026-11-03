@@ -68,6 +68,12 @@ func bind_casualties(allocator: CasualtyAllocator) -> void:
     allocation_panel.bind(allocator)
 
 
+## Shows why the battle could not start.
+func show_setup_error(message: String) -> void:
+    order_feedback.modulate = Color(1.0, 0.45, 0.4)
+    order_feedback.text = message
+
+
 func _on_move_ordered(state: SquadState, _from: Vector2, _to: Vector2) -> void:
     order_feedback.modulate = Color.WHITE
     order_feedback.text = "%s moving (%.1f left)" % [state.data.display_name, state.get_remaining_movement()]

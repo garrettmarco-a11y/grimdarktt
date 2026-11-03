@@ -112,6 +112,29 @@ static func blocks_between(a: Vector2, b: Vector2, polygon: PackedVector2Array) 
     return false
 
 
+## Shortest distance between segments a->b and c->d (0 if they cross).
+static func segment_distance(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> float:
+    if Geometry2D.segment_intersects_segment(a, b, c, d) != null:
+        return 0.0
+    return minf(minf(distance_to_segment(a, c, d), distance_to_segment(b, c, d)),
+        minf(distance_to_segment(c, a, b), distance_to_segment(d, a, b)))
+
+
+## True if a circle of `radius` swept from `a` to `b` (a == b for a single
+## position) overlaps the polygon's interior by more than EPSILON anywhere on
+## the way. Touching the boundary is not an overlap.
+static func swept_circle_overlaps(a: Vector2, b: Vector2, radius: float, polygon: PackedVector2Array) -> bool:
+    if polygon.size() < 3:
+        return false
+    if is_strictly_inside(polygon, a):
+        return true
+    var n := polygon.size()
+    for i in n:
+        if segment_distance(a, b, polygon[i], polygon[(i + 1) % n]) < radius - EPSILON:
+            return true
+    return false
+
+
 ## Area of a simple polygon (absolute value, either winding).
 static func polygon_area(polygon: PackedVector2Array) -> float:
     var twice := 0.0

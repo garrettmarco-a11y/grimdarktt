@@ -123,6 +123,15 @@ func crosses_impassable(from: Vector2, to: Vector2) -> bool:
     return false
 
 
+## True if a model base of `radius` swept from `from` to `to` (or standing at
+## `from` when they are equal) overlaps any impassable_area. Touching is fine.
+func base_crosses_impassable(from: Vector2, to: Vector2, radius: float) -> bool:
+    for placed in _placed:
+        if TerrainGeometry.swept_circle_overlaps(from, to, radius, placed.impassable_area):
+            return true
+    return false
+
+
 func _place(piece: TerrainPiece, position: Vector2, rotation: float) -> Placed:
     var placed := Placed.new()
     placed.piece = piece
