@@ -328,6 +328,9 @@ func _make_state(squad_id: StringName, player: int, position := Vector2.ZERO) ->
     squad.display_name = String(squad_id)
     squad.player = player
     squad.profile = UnitProfile.new()
+    var model := SquadModel.new()
+    model.model_name = "Trooper"
+    squad.models.append(model)
     return SquadState.new(squad, position)
 
 
@@ -677,21 +680,23 @@ func test_invalid_orders_leave_state_unchanged() -> void:
     _free_fixture(fixture)
 
 
-func test_allowance_measured_from_turn_start() -> void:
+func test_allowance_is_the_path_travelled_across_orders() -> void:
     var fixture := _movement_fixture([_make_mover(6.0, Vector2(10.0, 10.0))])
     var state: SquadState = fixture.battle.get_squad(&"mover")
     var movement: MovementController = fixture.movement
     _check_eq(movement.order_move(state, Vector2(14.0, 10.0)), MovementRules.Result.OK, "first order of 4")
     _check_eq(movement.order_move(state, Vector2(17.0, 10.0)), MovementRules.Result.OUT_OF_RANGE,
-        "7 from turn start rejected even though only 3 from current position")
+        "3 more is beyond the 2 left")
     _check_eq(state.board_position, Vector2(14.0, 10.0), "rejected order left position")
-    _check_eq(movement.order_move(state, Vector2(10.0, 15.5)), MovementRules.Result.OK, "5.5 from turn start accepted")
-    _check(is_equal_approx(state.distance_moved, 5.5), "distance measured from turn start")
-    _check_eq(movement.order_move(state, Vector2(16.0, 10.0)), MovementRules.Result.OK, "exactly the allowance accepted")
+    _check_eq(movement.order_move(state, Vector2(10.0, 10.0)), MovementRules.Result.OUT_OF_RANGE,
+        "returning to the turn-start position still costs the 4 walked back")
+    _check_eq(movement.order_move(state, Vector2(14.0, 11.5)), MovementRules.Result.OK, "1.5 more: 5.5 travelled")
+    _check(is_equal_approx(state.movement_used, 5.5), "movement used is the running total of every leg")
+    _check_eq(movement.order_move(state, Vector2(14.5, 11.5)), MovementRules.Result.OK, "exactly the remaining 0.5 accepted")
     _check(state.movement_complete, "full allowance used completes movement")
-    _check_eq(movement.order_move(state, Vector2(12.0, 10.0)), MovementRules.Result.MOVEMENT_COMPLETE,
+    _check_eq(movement.order_move(state, Vector2(14.0, 11.5)), MovementRules.Result.MOVEMENT_COMPLETE,
         "no further orders once complete")
-    _check_eq(state.board_position, Vector2(16.0, 10.0), "position held after exhaustion")
+    _check_eq(state.board_position, Vector2(14.5, 11.5), "position held after exhaustion")
     _free_fixture(fixture)
 
 
@@ -1551,14 +1556,17 @@ func test_leader_succession_keeps_positions_and_movement() -> void:
         [["Leader", null, Vector2.ZERO], ["Second", null, Vector2(2.0, 0.0)], ["Third", null, Vector2(0.0, 3.0)]])
     _check_eq(state.get_leader().get_model_name(), "Leader", "first model leads")
     state.begin_turn_movement(6.0)
-    state.apply_move(Vector2(13.0, 14.0), false)
+    var moves := {}
+    for model in state.get_living_models():
+        moves[model.model_id] = [model.position + Vector2(3.0, 4.0), 5.0]
+    state.apply_model_moves(moves, false)
     var second_world := state.get_model_position(state.get_model(1))
     var third_world := state.get_model_position(state.get_model(2))
     var moved := state.distance_moved
     state.take_wound(0)
     _check_eq(state.get_leader(), state.get_model(1), "next surviving model promoted")
     _check_eq(state.board_position, second_world, "anchor moves to the new leader")
-    _check_eq(state.get_model(1).offset, Vector2.ZERO, "new leader sits on the anchor")
+    _check_eq(state.board_position, state.get_model(1).position, "the anchor is the new leader's own position")
     _check_eq(state.get_model_position(state.get_model(1)), second_world, "new leader has not moved")
     _check_eq(state.get_model_position(state.get_model(2)), third_world, "other survivor has not moved")
     _check(is_equal_approx(state.distance_moved, moved), "distance moved this turn unchanged")
@@ -1813,10 +1821,11 @@ func test_leader_succession_after_movement() -> void:
     _check(is_equal_approx(squad.get_remaining_movement(), 1.0), "1 movement left")
     _check(not squad.movement_complete, "movement not complete")
     _check_eq(squad.movement_allowance, 6.0, "allowance unchanged")
-    _check_eq(movement.order_move(squad, second_turn_start + Vector2(0.0, 6.1)), MovementRules.Result.OUT_OF_RANGE,
-        "6.1 from the new leader's turn start refused")
-    _check_eq(movement.order_move(squad, second_turn_start + Vector2(0.0, 6.0)), MovementRules.Result.OK,
-        "exactly 6 from the new leader's turn start allowed")
+    var new_leader_at := squad.board_position
+    _check_eq(movement.order_move(squad, new_leader_at + Vector2(1.1, 0.0)), MovementRules.Result.OUT_OF_RANGE,
+        "1.1 more is beyond the new leader's remaining 1")
+    _check_eq(movement.order_move(squad, new_leader_at + Vector2(1.0, 0.0)), MovementRules.Result.OK,
+        "exactly its remaining 1 is allowed")
     _check(squad.movement_complete, "full allowance now used")
     f.activation.end_activation()
     for i in 4:
@@ -2666,10 +2675,12 @@ func test_fallback_off_battlefield_removes_squad() -> void:
     _check_eq(f.activation.active_squad, null, "activation ended by the removal")
     _check_eq(f.activation.get_active_player(), P2, "play passes on normally")
     _check_eq(f.tm.get_remaining_activations(P1), 1, "spent activation, not a second removal")
-    # A fall-back that ends exactly on the edge stays on the battlefield.
+    # A fall-back that ends exactly on the edge stays on the battlefield, its
+    # whole base still on the board.
     edge.morale_status = SquadState.MoraleStatus.BROKEN
     f.activation.activate(edge)
-    _check_eq(edge.board_position, Vector2(0.0, 16.0), "6 to the west edge exactly")
+    _check(edge.board_position.distance_to(Vector2(0.5, 16.0)) < 0.0001,
+        "6 towards the west edge: the base stops touching it: %s" % edge.board_position)
     _check(f.battle.get_squad(&"p2_x") != null, "still on the battlefield")
     _free_morale_fixture(f)
 
@@ -2866,6 +2877,16 @@ func _squad_at(squad_id: StringName, player: int, points: Array, wounds := 1) ->
     var state := _make_shooter(squad_id, player, points[0], models, 4, wounds)
     state.data.profile.movement = 6.0
     return state
+
+
+## A Movement-phase battle of `squads` on terrain, each squad's movement set to
+## `move` (activation not enforced). Free with _free_fixture.
+func _terrain_move_fixture(squads: Array, terrain: TerrainMap = null, move := 6.0) -> Dictionary:
+    for squad in squads:
+        squad.data.profile.movement = move
+    var f := _movement_fixture(squads)
+    f.movement.terrain = terrain
+    return f
 
 
 func _covers(state: SquadState, terrain: TerrainMap) -> Array:
@@ -3178,17 +3199,20 @@ func test_squad_movement_through_difficult_terrain() -> void:
         _piece(_rect_poly(8.0, 12.0, 10.0, 20.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
     ])
     var squad := _squad_at(&"s", P1, [Vector2(6.0, 5.0), Vector2(6.0, 15.0)])
-    squad.begin_turn_movement(6.0)
-    var board := Vector2(48.0, 32.0)
-    _check_cost(MovementRules.movement_cost(squad, Vector2(11.0, 5.0), terrain), 7.0,
-        "leader 5 with 1 difficult = 6; rear model crosses 2 difficult = 7: most restricted counts")
-    _check_eq(MovementRules.validate(squad, Vector2(11.0, 5.0), Phase.MOVEMENT, board, true, terrain),
-        MovementRules.Result.OUT_OF_RANGE, "7 > 6 refused")
-    _check_cost(MovementRules.movement_cost(squad, Vector2(10.0, 5.0), terrain), 6.0, "4 + 2 doubled for the rear model")
-    _check_eq(MovementRules.validate(squad, Vector2(10.0, 5.0), Phase.MOVEMENT, board, true, terrain),
-        MovementRules.Result.OK, "6 allowed")
-    _check_eq(MovementRules.validate(squad, Vector2(11.0, 5.0), Phase.MOVEMENT, board, true, null),
-        MovementRules.Result.OK, "no terrain: plain distance 5")
+    var f := _terrain_move_fixture([squad], terrain)
+    _check_cost(MovementRules.leader_cost(squad, Vector2(11.5, 5.0), terrain), 7.0, "leader: 4 + 1.5 doubled = 7")
+    _check_eq(f.movement.order_move(squad, Vector2(11.5, 5.0)), MovementRules.Result.OUT_OF_RANGE, "7 > 6: refused")
+    _check_eq(f.movement.order_move(squad, Vector2(11.0, 5.0)), MovementRules.Result.OK, "leader: 4 + 1 doubled = 6")
+    var leader := squad.get_model(0)
+    var rear := squad.get_model(1)
+    _check_eq(leader.position, Vector2(11.0, 5.0), "the leader reaches its destination")
+    _check_cost(leader.movement_used, 6.0, "the leader paid 6")
+    _check(rear.position.distance_to(Vector2(10.0, 15.0)) < 0.001,
+        "the rear model pays 2 + 2 doubled through its own mud and stops with 6 spent: %s" % rear.position)
+    _check_cost(rear.movement_used, 6.0, "each model pays from its own budget")
+    _check(f.movement.last_plan.fell_short == [rear], "the rear model is reported short of its slot")
+    _check(squad.movement_complete, "the leader's allowance is spent: movement complete")
+    _free_fixture(f)
 
 
 func test_difficult_terrain_with_shaken_allowance() -> void:
@@ -3212,27 +3236,31 @@ func test_difficult_terrain_with_shaken_allowance() -> void:
     movement.free()
 
 
-func test_impassable_terrain_rejects_any_model_path() -> void:
+func test_impassable_terrain_blocks_bases() -> void:
     var shape := _rect_poly(10.0, 14.0, 11.0, 20.0)
     var wall := _piece(PackedVector2Array(), shape, TerrainPiece.Cover.NONE, false, shape)
     var terrain := _terrain([wall])
     _check(terrain.is_segment_blocked(Vector2(6.0, 15.0), Vector2(14.0, 15.0)), "a wall with matching polygons blocks sight")
     var squad := _squad_at(&"s", P1, [Vector2(6.0, 5.0), Vector2(6.0, 15.0)])
-    squad.begin_turn_movement(10.0)
-    var board := Vector2(48.0, 32.0)
-    _check_eq(MovementRules.validate(squad, Vector2(14.0, 5.0), Phase.MOVEMENT, board, true, terrain),
-        MovementRules.Result.IMPASSABLE, "the leader's path is clear but the rear model's crosses the wall")
-    _check_eq(MovementRules.validate(squad, Vector2(8.0, 5.0), Phase.MOVEMENT, board, true, terrain),
-        MovementRules.Result.OK, "stopping short of the wall")
-    _check_eq(MovementRules.validate(squad, Vector2(6.0, 4.0), Phase.MOVEMENT, board, true, terrain),
-        MovementRules.Result.OK, "moving away")
+    var f := _terrain_move_fixture([squad], terrain, 10.0)
+    _check_eq(f.movement.order_move(squad, Vector2(14.0, 5.0)), MovementRules.Result.OK,
+        "the leader's path is clear; its follower's crosses the wall")
+    _check(squad.get_model(1).position.distance_to(Vector2(9.5, 15.0)) < 0.001,
+        "the follower stops with its base in contact with the wall, not through it: %s" % squad.get_model(1).position)
+    _check_eq(f.movement.last_plan.fell_short, [squad.get_model(1)], "and is reported short")
     _check(not terrain.crosses_impassable(Vector2(8.0, 16.0), Vector2(12.0, 12.0)), "grazing a corner only is not crossing")
     _check(not terrain.crosses_impassable(Vector2(10.0, 12.0), Vector2(10.0, 22.0)), "running along an edge is not crossing")
-    _check(not terrain.crosses_impassable(Vector2(6.0, 17.0), Vector2(10.0, 17.0)), "stopping on the edge is not crossing")
     var edge_squad := _squad_at(&"e", P1, [Vector2(6.0, 17.0)])
-    edge_squad.begin_turn_movement(6.0)
-    _check_eq(MovementRules.validate(edge_squad, Vector2(10.0, 17.0), Phase.MOVEMENT, board, true, terrain),
-        MovementRules.Result.OK, "a move ending in contact with the wall is legal")
+    var g := _terrain_move_fixture([edge_squad], terrain)
+    _check_eq(g.movement.order_move(edge_squad, Vector2(9.6, 17.0)), MovementRules.Result.IMPASSABLE,
+        "a leader whose base would overlap the wall is refused")
+    _check_eq(g.movement.order_move(edge_squad, Vector2(14.0, 17.0)), MovementRules.Result.IMPASSABLE,
+        "a leader path through the wall is refused")
+    _check_eq(g.movement.order_move(edge_squad, Vector2(9.5, 17.0)), MovementRules.Result.OK,
+        "a move ending with the base in contact with the wall is legal")
+    _check_eq(edge_squad.board_position, Vector2(9.5, 17.0), "the leader stands in contact")
+    _free_fixture(f)
+    _free_fixture(g)
 
 
 func test_impassable_geometry_is_independent() -> void:
@@ -3258,39 +3286,75 @@ func test_impassable_geometry_is_independent() -> void:
         MovementRules.Result.OK, "a squad may move through a LoS-only wall")
 
 
-func test_multiple_orders_measured_from_turn_start_with_terrain() -> void:
+func test_multiple_orders_pay_the_path_travelled() -> void:
     var terrain := _terrain([_piece(_rect_poly(10.0, 0.0, 14.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)])
     var squad := _squad_at(&"s", P1, [Vector2(8.0, 5.0)])
-    var tm := TurnManager.new()
-    var battle := BattleState.new()
-    battle.add_squad(squad)
-    var movement := MovementController.new()
-    movement.bind(battle, tm, Vector2(48.0, 32.0))
-    movement.terrain = terrain
-    tm.start_game()
-    _check_eq(movement.order_move(squad, Vector2(11.0, 5.0)), MovementRules.Result.OK, "2 + 1 doubled = 4")
+    var f := _terrain_move_fixture([squad], terrain)
+    _check_eq(f.movement.order_move(squad, Vector2(11.0, 5.0)), MovementRules.Result.OK, "2 + 1 doubled = 4")
     _check_cost(squad.movement_used, 4.0, "cost recorded")
-    _check_eq(movement.order_move(squad, Vector2(8.0, 1.0)), MovementRules.Result.OK,
-        "second order costed from the turn start: straight 4 north, outside the mud")
-    _check_cost(squad.movement_used, 4.0, "cost of the new position from the turn start, not a running total")
-    tm.free()
-    movement.free()
+    _check_eq(f.movement.order_move(squad, Vector2(8.0, 5.0)), MovementRules.Result.OUT_OF_RANGE,
+        "walking back costs 1 doubled + 2 = 4 more, though the turn-start position is 0 away")
+    _check_eq(f.movement.order_move(squad, Vector2(11.0, 6.0)), MovementRules.Result.OK, "1 more inside the mud, doubled")
+    _check_cost(squad.movement_used, 6.0, "a running total of every leg: 4 + 2")
+    _check(squad.movement_complete, "allowance spent")
+    _free_fixture(f)
 
 
-func test_fallback_ignores_terrain() -> void:
+func test_fallback_ignores_difficult_terrain_but_not_impassable() -> void:
     var broken := _squad(&"p1_b", P1, Vector2(10.0, 12.0), 1)
     var enemy := _squad(&"p2_e", P2, Vector2(40.0, 16.0), 1)
     var f := _morale_fixture([broken, enemy], [6, 6])
-    var terrain := _terrain([
+    f.morale.terrain = _terrain([_piece(_rect_poly(5.0, 0.0, 9.0, 30.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)])
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    f.activation.activate(broken)
+    _check_eq(broken.board_position, Vector2(4.0, 12.0), "full 6 west through difficult terrain, unslowed")
+    _free_morale_fixture(f)
+    var walled := _squad(&"p1_w", P1, Vector2(10.0, 12.0), 1)
+    var other := _squad(&"p2_o", P2, Vector2(40.0, 16.0), 1)
+    var g := _morale_fixture([walled, other], [6, 6])
+    g.morale.terrain = _terrain([
         _piece(_rect_poly(5.0, 0.0, 9.0, 30.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
         _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(6.0, 0.0, 6.5, 30.0)),
     ])
-    f.movement.terrain = terrain
+    walled.morale_status = SquadState.MoraleStatus.BROKEN
+    g.activation.activate(walled)
+    _check(walled.board_position.distance_to(Vector2(7.0, 12.0)) < 0.001,
+        "an impassable wall stops the fall-back with the base in contact: %s" % walled.board_position)
+    _check(g.battle.get_squad(&"p1_w") != null, "the squad stays on the battlefield")
+    _check(walled.movement_complete, "its movement is complete")
+    _free_morale_fixture(g)
+
+
+func test_fallback_respects_models_and_board_edge() -> void:
+    var broken := _squad_at(&"p1_b", P1, [Vector2(8.0, 12.0), Vector2(3.0, 15.0), Vector2(10.0, 12.0)])
+    var enemy := _squad_at(&"p2_e", P2, [Vector2(5.0, 12.0)])
+    var f := _morale_fixture([broken, enemy], [6, 6])
     broken.morale_status = SquadState.MoraleStatus.BROKEN
     f.activation.activate(broken)
-    _check_eq(broken.board_position, Vector2(4.0, 12.0),
-        "full 6 west, through difficult terrain and an impassable wall")
+    var leader := broken.get_model(0)
+    var ahead := broken.get_model(1)
+    var behind := broken.get_model(2)
+    _check(f.battle.get_squad(&"p1_b") != null, "an enemy blocks the leader's way off: the squad is not removed")
+    _check(leader.position.distance_to(Vector2(6.0, 12.0)) < 0.001, "the leader stops in contact with the enemy: %s" % leader.position)
+    _check(ahead.position.distance_to(Vector2(0.5, 15.0)) < 0.001, "a model reaching the edge first stops at it: %s" % ahead.position)
+    _check(behind.position.distance_to(Vector2(7.0, 12.0)) < 0.001, "the model behind stops in contact with its leader: %s" % behind.position)
+    _check(_no_overlaps([broken, enemy]), "fall-back never overlaps bases")
     _free_morale_fixture(f)
+    var runner := _squad_at(&"p1_r", P1, [Vector2(4.0, 12.0), Vector2(1.0, 15.0)])
+    var far := _squad_at(&"p2_f", P2, [Vector2(40.0, 16.0)])
+    var g := _morale_fixture([runner, far], [6, 6])
+    runner.morale_status = SquadState.MoraleStatus.BROKEN
+    g.activation.activate(runner)
+    _check(g.battle.get_squad(&"p1_r") == null, "a clear path off the edge for the leader removes the whole squad")
+    _free_morale_fixture(g)
+    var trapped := _squad_at(&"p1_t", P1, [Vector2(10.0, 12.0)])
+    var cage := _squad_at(&"p2_c", P2, [Vector2(9.0, 12.0), Vector2(11.0, 12.0), Vector2(10.0, 11.0), Vector2(10.0, 13.0)])
+    var h := _morale_fixture([trapped, cage], [6, 6])
+    trapped.morale_status = SquadState.MoraleStatus.BROKEN
+    h.activation.activate(trapped)
+    _check_eq(trapped.board_position, Vector2(10.0, 12.0), "a completely blocked model stays where it is")
+    _check(h.battle.get_squad(&"p1_t") != null and trapped.get_model_count() == 1, "with no further penalty")
+    _free_morale_fixture(h)
 
 
 func test_line_of_sight_geometry_rules() -> void:
@@ -3649,3 +3713,618 @@ func test_main_scene_wiring() -> void:
         _check_eq(label.text, "Turn 2 - Movement", "banner text after a full turn (Morale has no tests yet)")
     main.queue_free()
     await process_frame
+
+
+# --- Task 2.2: model bases and placement ---
+
+func test_model_base_contact_and_overlap() -> void:
+    var line: SquadData = load("res://data/squads/p1_line_squad.tres")
+    _check_eq(line.models[0].base_radius, 0.5, "models default to a 0.5 base radius")
+    var squad := _squad_at(&"s", P1, [Vector2(10.0, 10.0)])
+    _check_eq(squad.get_leader().get_base_radius(), 0.5, "ModelState reads its base radius")
+    var touching_rejected := 0
+    var overlap_missed := 0
+    for i in 24:
+        var direction := Vector2.RIGHT.rotated(deg_to_rad(15.0 * i + 0.37))
+        var a := Vector2(20.3, 15.7)
+        if ModelPlacement.bases_overlap(a, 0.5, a + direction * 1.0, 0.5):
+            touching_rejected += 1
+        if not ModelPlacement.bases_overlap(a, 0.5, a + direction * 0.99, 0.5):
+            overlap_missed += 1
+    _check_eq(touching_rejected, 0, "bases exactly in contact never overlap, at any angle")
+    _check_eq(overlap_missed, 0, "bases 0.01 inside contact always overlap")
+    _check(not ModelPlacement.bases_overlap(Vector2.ZERO, 0.5, Vector2(1.25, 0.0), 0.75), "different radii in contact")
+    _check(ModelPlacement.bases_overlap(Vector2.ZERO, 0.5, Vector2(1.2, 0.0), 0.75), "different radii overlapping")
+    _check(ModelPlacement.path_hits_base(Vector2(0.0, 0.0), Vector2(10.0, 0.0), 0.5, Vector2(5.0, 0.5), 0.5),
+        "a path through another base is blocked")
+    _check(not ModelPlacement.path_hits_base(Vector2(0.0, 0.0), Vector2(10.0, 0.0), 0.5, Vector2(5.0, 1.0), 0.5),
+        "a path grazing another base in contact is clear")
+    _check(not ModelPlacement.path_hits_base(Vector2(0.0, 0.0), Vector2(3.9, 0.0), 0.5, Vector2(5.0, 0.0), 0.5),
+        "a path stopping short of another base is clear")
+
+
+func test_model_base_on_board() -> void:
+    var board := Vector2(48.0, 32.0)
+    _check(ModelPlacement.base_on_board(Vector2(0.5, 0.5), 0.5, board), "base touching two edges is on the board")
+    _check(ModelPlacement.base_on_board(Vector2(47.5, 31.5), 0.5, board), "far corner, touching")
+    _check(not ModelPlacement.base_on_board(Vector2(0.4, 10.0), 0.5, board), "base hanging over the left edge")
+    _check(not ModelPlacement.base_on_board(Vector2(10.0, 31.6), 0.5, board), "base hanging over the bottom edge")
+
+
+func test_model_base_against_impassable_terrain() -> void:
+    var wall := _rect_poly(10.0, 0.0, 10.6, 20.0)
+    var terrain := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, wall)])
+    _check(not terrain.base_crosses_impassable(Vector2(9.5, 5.0), Vector2(9.5, 5.0), 0.5), "base touching the wall is legal")
+    _check(terrain.base_crosses_impassable(Vector2(9.6, 5.0), Vector2(9.6, 5.0), 0.5), "base overlapping the wall is not")
+    _check(terrain.base_crosses_impassable(Vector2(10.3, 5.0), Vector2(10.3, 5.0), 0.5), "base centred in the wall is not")
+    _check(terrain.base_crosses_impassable(Vector2(5.0, 5.0), Vector2(15.0, 5.0), 0.5), "a path cannot tunnel through a thin wall")
+    _check(not terrain.base_crosses_impassable(Vector2(5.0, 5.0), Vector2(9.5, 5.0), 0.5), "a path ending in contact is legal")
+    _check(not terrain.base_crosses_impassable(Vector2(5.0, 20.5), Vector2(15.0, 20.5), 0.5), "a path sliding past the wall's end in contact")
+    _check(terrain.base_crosses_impassable(Vector2(5.0, 20.4), Vector2(15.0, 20.4), 0.5),
+        "a path clipping the wall's end with the base (centre clear) is blocked")
+    _check(not terrain.crosses_impassable(Vector2(5.0, 20.4), Vector2(15.0, 20.4)), "... although the centre path alone is clear")
+    var rotated := TerrainMap.new()
+    rotated.add(_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(-3.0, -0.3, 3.0, 0.3)),
+        Vector2(24.0, 16.0), deg_to_rad(30.0))
+    var normal := Vector2(0.0, 1.0).rotated(deg_to_rad(30.0))
+    _check(not rotated.base_crosses_impassable(Vector2(24.0, 16.0) + normal * 0.8, Vector2(24.0, 16.0) + normal * 0.8, 0.5),
+        "rotated wall: base in contact with its face")
+    _check(rotated.base_crosses_impassable(Vector2(24.0, 16.0) + normal * 0.79, Vector2(24.0, 16.0) + normal * 0.79, 0.5),
+        "rotated wall: base 0.01 into its face")
+
+
+func test_layout_validation() -> void:
+    var board := Vector2(48.0, 32.0)
+    var friendly := _squad_at(&"a", P1, [Vector2(10.0, 10.0), Vector2(11.0, 10.0)])
+    _check(ModelPlacement.layout_errors([friendly], board).is_empty(), "friendly models in contact are legal")
+    var cramped := _squad_at(&"b", P1, [Vector2(10.0, 10.0), Vector2(10.9, 10.0)])
+    var errors := ModelPlacement.layout_errors([cramped], board)
+    _check_eq(errors.size(), 1, "two overlapping friendly models: one error")
+    _check(errors[0].contains("b M0 (#0)") and errors[0].contains("b M1 (#1)"), "the error names both models: %s" % errors[0])
+    var mine := _squad_at(&"p1", P1, [Vector2(20.0, 10.0)])
+    var theirs := _squad_at(&"p2", P2, [Vector2(20.5, 10.0)])
+    _check_eq(ModelPlacement.find_overlaps([mine, theirs]).size(), 1, "opposing models overlapping are found")
+    theirs.board_position = Vector2(21.0, 10.0)
+    _check(ModelPlacement.find_overlaps([mine, theirs]).is_empty(), "opposing models in contact are legal")
+    var edge := _squad_at(&"e", P1, [Vector2(0.3, 10.0)])
+    _check_eq(ModelPlacement.layout_errors([edge], board).size(), 1, "a base off the board edge is an error")
+    var terrain := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(30.0, 0.0, 31.0, 20.0))])
+    var stuck := _squad_at(&"t", P1, [Vector2(30.2, 10.0)])
+    _check_eq(ModelPlacement.layout_errors([stuck], board, terrain).size(), 1, "a base on impassable terrain is an error")
+    var casualty := _squad_at(&"c", P1, [Vector2(10.0, 10.0), Vector2(10.5, 10.0)])
+    casualty.take_wound(1)
+    _check(ModelPlacement.layout_errors([casualty], board).is_empty(), "a removed model occupies no space")
+
+
+func test_invalid_starting_layout_rejected_in_main() -> void:
+    var main: Node = load("res://scenes/core/Main.tscn").instantiate()
+    var setups: Array[SquadSetup] = []
+    for position in [Vector2(12.0, 16.0), Vector2(12.5, 16.0)]:
+        var setup := SquadSetup.new()
+        setup.squad = load("res://data/squads/p1_line_squad.tres") if setups.is_empty() else load("res://data/squads/p2_raider_squad.tres")
+        setup.start_position = position
+        setups.append(setup)
+    main.squad_setups = setups
+    print("        (the next 2 errors are expected)")
+    root.add_child(main)
+    await process_frame
+    _check(not main.layout_errors.is_empty(), "the overlapping layout is reported: %s" % [main.layout_errors])
+    _check(main.battle.get_squads().is_empty(), "no squad is placed from an invalid layout")
+    _check_eq(main.turn_manager.turn_number, 0, "the game does not start")
+    _check(main.hud.order_feedback.text.begins_with("Invalid starting layout"), "the HUD says why")
+    main.queue_free()
+    await process_frame
+
+
+func test_default_starting_layout_is_valid() -> void:
+    var main: Node = await _load_main()
+    _check(main.layout_errors.is_empty(), "the main scene's squads are legally placed: %s" % [main.layout_errors])
+    _check_eq(main.battle.get_squads().size(), 2, "both squads placed")
+    _check(ModelPlacement.find_overlaps(main.battle.get_squads()).is_empty(), "no overlapping bases")
+    main.queue_free()
+    await process_frame
+
+
+# --- Task 2.2: leader-directed movement and collision ---
+
+## Squad `squad_id` of `player` with one model per point (first is the
+## leader); each model's formation slot is its offset from the leader.
+func _formation(squad_id: StringName, player: int, points: Array) -> SquadState:
+    return _squad_at(squad_id, player, points)
+
+
+func _no_overlaps(squads: Array) -> bool:
+    var typed: Array[SquadState] = []
+    typed.assign(squads)
+    return ModelPlacement.find_overlaps(typed).is_empty()
+
+
+func test_friendly_models_cannot_overlap() -> void:
+    var mover := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0)])
+    var friend := _formation(&"p1_b", P1, [Vector2(14.0, 12.0)])
+    var f := _terrain_move_fixture([mover, friend])
+    _check_eq(f.movement.order_move(mover, Vector2(14.0, 12.0)), MovementRules.Result.BLOCKED_BY_MODEL,
+        "a leader cannot be ordered onto a friendly model of another squad")
+    _check_eq(f.movement.order_move(mover, Vector2(14.0, 10.0)), MovementRules.Result.OK,
+        "the leader's own path is clear")
+    var follower := mover.get_model(1)
+    _check(follower.position.distance_to(Vector2(13.0, 12.0)) < 0.001,
+        "the follower's slot is occupied by a friend: it stops in base contact: %s" % follower.position)
+    _check(_no_overlaps([mover, friend]), "no bases overlap")
+    _check_eq(friend.board_position, Vector2(14.0, 12.0), "the friendly model is not pushed")
+    _check_eq(f.movement.last_plan.fell_short, [follower], "the follower is reported short")
+    _free_fixture(f)
+
+
+func test_opposing_models_cannot_overlap() -> void:
+    var mover := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0)])
+    var enemy := _formation(&"p2_e", P2, [Vector2(14.0, 12.0), Vector2(18.0, 12.0)])
+    var f := _terrain_move_fixture([mover, enemy])
+    _check_eq(f.movement.order_move(mover, Vector2(14.3, 12.4)), MovementRules.Result.BLOCKED_BY_MODEL,
+        "a leader cannot be ordered onto an enemy model")
+    _check_eq(mover.board_position, Vector2(10.0, 10.0), "a refused order moves nothing")
+    _check_eq(f.movement.order_move(mover, Vector2(14.0, 10.0)), MovementRules.Result.OK, "leader path clear")
+    _check(mover.get_model(1).position.distance_to(Vector2(13.0, 12.0)) < 0.001, "the follower stops in contact with the enemy")
+    _check(_no_overlaps([mover, enemy]), "no bases overlap")
+    _free_fixture(f)
+
+
+func test_models_moving_toward_one_another_stop_in_contact() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var b := _formation(&"p2_b", P2, [Vector2(16.0, 10.0)])
+    var f := _terrain_move_fixture([a, b])
+    _check_eq(f.movement.order_move(a, Vector2(15.01, 10.0)), MovementRules.Result.BLOCKED_BY_MODEL, "0.01 into the enemy: refused")
+    _check_eq(f.movement.order_move(a, Vector2(13.0, 10.0)), MovementRules.Result.OK, "first leg toward the enemy")
+    _check_eq(f.movement.order_move(b, Vector2(14.0, 10.0)), MovementRules.Result.OK, "the enemy closes to exact contact")
+    _check(is_equal_approx(a.board_position.distance_to(b.board_position), 1.0), "centres exactly one base apart")
+    _check(_no_overlaps([a, b]), "contact is not overlap")
+    _check_eq(f.movement.order_move(a, Vector2(13.5, 10.0)), MovementRules.Result.BLOCKED_BY_MODEL,
+        "pushing further into a model in contact is refused")
+    _check_eq(f.movement.order_move(a, Vector2(13.0, 12.0)), MovementRules.Result.OK, "moving away from contact is free")
+    _free_fixture(f)
+
+
+func test_edge_to_edge_contact_at_any_angle() -> void:
+    var refused := 0
+    var accepted_overlap := 0
+    for i in 16:
+        var direction := Vector2.RIGHT.rotated(deg_to_rad(22.5 * i + 0.37))
+        var a := _formation(&"p1_a", P1, [Vector2(20.0, 16.0) - direction * 3.0])
+        var b := _formation(&"p2_b", P2, [Vector2(20.0, 16.0)])
+        var f := _terrain_move_fixture([a, b])
+        if f.movement.order_move(a, Vector2(20.0, 16.0) - direction * 1.0) != MovementRules.Result.OK:
+            refused += 1
+        if f.movement.order_move(a, Vector2(20.0, 16.0) - direction * 0.99) == MovementRules.Result.OK:
+            accepted_overlap += 1
+        _free_fixture(f)
+    _check_eq(refused, 0, "moving into exact base contact is legal from every direction")
+    _check_eq(accepted_overlap, 0, "moving 0.01 past contact is refused from every direction")
+
+
+func test_models_cannot_pass_through_models() -> void:
+    var mover := _formation(&"p1_a", P1, [Vector2(10.0, 10.0), Vector2(10.0, 13.0)])
+    var line := []
+    for y in [9.0, 10.0, 11.0, 12.0, 13.0, 14.0]:
+        line.append(Vector2(14.0, y))
+    var enemy := _formation(&"p2_e", P2, line)
+    var f := _terrain_move_fixture([mover, enemy])
+    _check_eq(f.movement.order_move(mover, Vector2(16.0, 10.0)), MovementRules.Result.BLOCKED_BY_MODEL,
+        "the leader cannot pass through an enemy to a clear point beyond it")
+    _check_eq(f.movement.order_move(mover, Vector2(13.5, 7.5)), MovementRules.Result.OK, "the leader goes around the end")
+    var follower := mover.get_model(1)
+    _check(follower.position.x < 14.0 - 0.5, "the follower, whose slot lies inside the enemy line, stays on the near side: %s" % follower.position)
+    _check(not f.movement.last_plan.reached[1], "and is reported short")
+    _check(_no_overlaps([mover, enemy]), "no bases overlap")
+    _free_fixture(f)
+
+
+func test_movement_around_an_occupied_position() -> void:
+    var mover := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var enemy := _formation(&"p2_e", P2, [Vector2(13.0, 10.0)])
+    var f := _terrain_move_fixture([mover, enemy], null, 7.0)
+    _check_eq(f.movement.order_move(mover, Vector2(16.0, 10.0)), MovementRules.Result.BLOCKED_BY_MODEL, "straight through is refused")
+    _check_eq(f.movement.order_move(mover, Vector2(13.0, 11.0)), MovementRules.Result.BLOCKED_BY_MODEL,
+        "a leg ending in contact but clipping the base on the way is refused")
+    _check_eq(f.movement.order_move(mover, Vector2(13.0, 11.2)), MovementRules.Result.OK, "first leg: alongside")
+    _check_eq(f.movement.order_move(mover, Vector2(16.0, 10.0)), MovementRules.Result.OK, "second leg: past it")
+    _check(absf(mover.movement_used - sqrt(10.44) * 2.0) < 0.001, "the detour costs both legs: %.3f" % mover.movement_used)
+    _check(_no_overlaps([mover, enemy]), "no bases overlap")
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 20.0), Vector2(10.0, 22.0)])
+    var post := _formation(&"p2_p", P2, [Vector2(13.0, 22.6)])
+    var g := _terrain_move_fixture([squad, post], null, 7.0)
+    _check_eq(g.movement.order_move(squad, Vector2(16.0, 20.0)), MovementRules.Result.OK, "the leader passes above the post")
+    _check(squad.get_model(1).position.distance_to(Vector2(16.0, 22.0)) < 0.001,
+        "the follower, blocked off-centre, slides around the post and reaches its slot: %s" % squad.get_model(1).position)
+    _check(_no_overlaps([squad, post]), "no bases overlap")
+    _free_fixture(f)
+    _free_fixture(g)
+
+
+func test_own_models_never_overlap_mid_move() -> void:
+    var squad := _formation(&"p1_column", P1, [Vector2(10.0, 10.0), Vector2(11.0, 10.0), Vector2(12.0, 10.0), Vector2(10.0, 11.0)])
+    var enemy := _formation(&"p2_e", P2, [Vector2(30.0, 30.0)])
+    var worst := [INF]
+    var observer := func(positions: Dictionary) -> void:
+        var ids := positions.keys()
+        for i in ids.size():
+            for j in range(i + 1, ids.size()):
+                worst[0] = minf(worst[0], positions[ids[i]].distance_to(positions[ids[j]]))
+    for destination in [Vector2(16.0, 10.0), Vector2(6.0, 10.0), Vector2(10.0, 15.0), Vector2(13.0, 6.0)]:
+        squad.board_position = Vector2(10.0, 10.0)
+        squad.begin_turn_movement(6.0)
+        SquadMover.plan_move(squad, destination, [squad, enemy], null, Vector2(48.0, 32.0), observer)
+    _check(worst[0] >= 1.0 - ModelPlacement.CONTACT_TOLERANCE,
+        "models in contact moving forward, backward and sideways never overlap at any intermediate step: closest %.6f" % worst[0])
+    squad.board_position = Vector2(10.0, 10.0)
+    squad.begin_turn_movement(6.0)
+    var first := SquadMover.plan_move(squad, Vector2(6.0, 10.0), [squad, enemy], null, Vector2(48.0, 32.0))
+    var second := SquadMover.plan_move(squad, Vector2(6.0, 10.0), [squad, enemy], null, Vector2(48.0, 32.0))
+    _check_eq(first.moves, second.moves, "resolution is deterministic")
+
+
+func test_casualty_frees_occupied_space() -> void:
+    var mover := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var enemy := _formation(&"p2_e", P2, [Vector2(14.0, 10.0), Vector2(20.0, 10.0)])
+    var f := _terrain_move_fixture([mover, enemy])
+    _check_eq(f.movement.order_move(mover, Vector2(14.0, 10.0)), MovementRules.Result.BLOCKED_BY_MODEL, "occupied")
+    enemy.take_wound(0)
+    _check_eq(f.movement.order_move(mover, Vector2(14.0, 10.0)), MovementRules.Result.OK, "the casualty's space is free at once")
+    _check_eq(enemy.get_living_models().size(), 1, "the rest of the enemy squad stays")
+    _check(_no_overlaps([mover, enemy]), "no overlaps")
+    _free_fixture(f)
+
+
+func test_leader_succession_with_individual_positions() -> void:
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(12.0, 10.0), Vector2(10.0, 12.0)])
+    var f := _terrain_move_fixture([squad])
+    _check_eq(f.movement.order_move(squad, Vector2(13.0, 10.0)), MovementRules.Result.OK, "move 3")
+    var before := squad.get_living_models().map(func(m): return [m.position, m.turn_start_position, m.movement_used])
+    squad.take_wound(0)
+    var after := squad.get_living_models().map(func(m): return [m.position, m.turn_start_position, m.movement_used])
+    _check_eq(after, before.slice(1), "survivors keep position, turn start and movement used exactly")
+    _check_eq(squad.board_position, squad.get_model(1).position, "the anchor is the new leader")
+    _check(_no_overlaps([squad]), "succession creates no overlap")
+    _check_eq(f.movement.order_move(squad, Vector2(17.0, 10.0)), MovementRules.Result.OK, "the new leader leads")
+    _check(squad.get_model(2).position.distance_to(Vector2(15.0, 12.0)) < 0.001,
+        "the follower's slot is rebased on the new leader's slot (-2, +2): %s" % squad.get_model(2).position)
+    _free_fixture(f)
+
+
+func test_follower_cannot_reach_its_slot() -> void:
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0)])
+    var f := _terrain_move_fixture([squad])
+    squad.get_model(1).position = Vector2(4.0, 12.0)  # straggling 6 behind its slot
+    _check_eq(f.movement.order_move(squad, Vector2(14.0, 10.0)), MovementRules.Result.OK, "the leader moves 4")
+    var straggler := squad.get_model(1)
+    _check(straggler.position.distance_to(Vector2(10.0, 12.0)) < 0.001,
+        "the straggler spends its full 6 and stops short of its slot at (14, 12): %s" % straggler.position)
+    _check_cost(straggler.movement_used, 6.0, "never more than its allowance")
+    _check(_no_overlaps([squad]), "it stops at a legal position")
+    var boxed := _formation(&"p1_b", P1, [Vector2(30.0, 10.0), Vector2(30.0, 20.0)])
+    var walls := [_formation(&"p2_w", P2, [Vector2(29.0, 20.0), Vector2(31.0, 20.0), Vector2(30.0, 19.0), Vector2(30.0, 21.0)])]
+    var g := _terrain_move_fixture([boxed, walls[0]])
+    _check_eq(g.movement.order_move(boxed, Vector2(34.0, 10.0)), MovementRules.Result.OK, "the leader moves")
+    _check_eq(boxed.get_model(1).position, Vector2(30.0, 20.0), "a follower boxed in on all sides does not move")
+    _check(_no_overlaps([boxed, walls[0]]), "no overlaps")
+    _free_fixture(f)
+    _free_fixture(g)
+
+
+# --- Task 2.2: cohesion (report only) ---
+
+func test_cohesion_connected_chain() -> void:
+    var chain := _formation(&"p1_c", P1, [Vector2(10.0, 10.0), Vector2(12.0, 10.0), Vector2(14.0, 10.0), Vector2(16.0, 10.0)])
+    _check(CohesionRules.is_coherent(chain), "bases exactly 1.0 apart edge to edge form a chain")
+    _check(chain.get_model(3).position.distance_to(chain.board_position) > 3.0,
+        "the far end is 6 from the leader: a chain, not a distance from the leader")
+    var gap := _formation(&"p1_g", P1, [Vector2(10.0, 10.0), Vector2(12.01, 10.0), Vector2(14.01, 10.0)])
+    _check(not CohesionRules.is_coherent(gap), "a 1.01 gap breaks the chain")
+    _check_eq(CohesionRules.out_of_cohesion(gap), [gap.get_model(1), gap.get_model(2)], "the models cut off from the leader")
+    _check_eq(CohesionRules.describe(gap), "Out of cohesion: 2 models", "described")
+    _check(CohesionRules.is_coherent(_formation(&"p1_one", P1, [Vector2(5.0, 5.0)])), "a lone model is always in cohesion")
+    chain.take_wound(1)
+    _check(not CohesionRules.is_coherent(chain), "a casualty in the middle of the chain splits it")
+    _check_eq(CohesionRules.out_of_cohesion(chain), [chain.get_model(2), chain.get_model(3)], "the far side is out")
+    _check(ModelPlacement.find_overlaps([chain]).is_empty(), "out of cohesion is not overlap")
+
+
+func test_cohesion_violation_without_overlap_is_reported_not_fixed() -> void:
+    var wall := _rect_poly(12.0, 13.0, 13.0, 30.0)
+    var terrain := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, wall)])
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0), Vector2(10.0, 14.0)])
+    var f := _terrain_move_fixture([squad], terrain)
+    _check(CohesionRules.is_coherent(squad), "starts in cohesion")
+    _check_eq(f.movement.order_move(squad, Vector2(16.0, 10.0)), MovementRules.Result.OK, "the move is allowed")
+    var rear := squad.get_model(2)
+    _check(rear.position.distance_to(Vector2(11.5, 14.0)) < 0.001, "the rear model is stopped by the wall: %s" % rear.position)
+    _check(not CohesionRules.is_coherent(squad), "the squad is now out of cohesion")
+    _check(_no_overlaps([squad]), "but no bases overlap")
+    _check(rear.position.distance_to(Vector2(11.5, 14.0)) < 0.001, "nothing moved it to restore cohesion")
+    _free_fixture(f)
+
+
+func test_cohesion_shown_in_info_panel_and_feedback() -> void:
+    var main: Node = await _load_main()
+    var panel: SquadInfoPanel = main.hud.squad_info_panel
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    main.selection.select(line)
+    _check_eq(panel.cohesion_label.text, "Cohesion: OK", "the starting formation is in cohesion")
+    line.get_model(3).position += Vector2(0.0, -3.0)
+    line.position_changed.emit(line)
+    _check_eq(panel.cohesion_label.text, "Out of cohesion: 1 model", "the panel follows positions")
+    main.queue_free()
+    await process_frame
+
+
+# --- Task 2.2: tokens follow individual positions ---
+
+func test_tokens_draw_individual_models() -> void:
+    var main: Node = await _load_main()
+    var layer: SquadLayer = main.squad_layer
+    var board: GameBoard = main.game_board
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var token := layer.get_token(&"p1_line_squad")
+    _check_eq(token.model_radii.size(), 4, "one base per living model")
+    _check_eq(token.model_radii[0], 0.5 * board.pixels_per_unit, "bases drawn at their true size")
+    var follower := line.get_model(3)
+    _check_eq(layer.token_at(board.units_to_pixels(follower.position)), token, "clicking a follower's base hits its squad")
+    _check_eq(layer.token_at(board.units_to_pixels(follower.position) + Vector2(14.0, 0.0)), null,
+        "just beyond the base is empty space")
+    main.activation.activate(line)
+    _check_eq(main.movement.order_move(line, Vector2(15.0, 16.0)), MovementRules.Result.OK, "move the squad 3 east")
+    _check(token.is_moving(), "every model glides")
+    token.advance(100.0)
+    var drawn := []
+    for i in token.model_offsets.size():
+        drawn.append(token.position + token.model_offsets[i])
+    var authoritative := line.get_living_models().map(func(m): return board.units_to_pixels(m.position))
+    _check_eq(drawn, authoritative, "each model ends drawn at its own authoritative position")
+    _check(not token.is_moving(), "and stops")
+    main.queue_free()
+    await process_frame
+
+
+# --- Task 2.2 follow-up: contact precision ---
+
+func test_contact_tolerance_is_only_float_rounding() -> void:
+    var tol := ModelPlacement.CONTACT_TOLERANCE
+    _check(tol <= 0.00001, "the contact tolerance is float32-rounding sized, not a rules allowance")
+    _check(not ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(11.0, 10.0), 0.5), "exact contact is legal")
+    var rounded_contacts_rejected := 0
+    for i in 3600:
+        var direction := Vector2.RIGHT.rotated(deg_to_rad(0.1 * i + 0.013))
+        var a := Vector2(3.7 + fmod(i * 1.3, 40.0), 2.1 + fmod(i * 0.7, 28.0))
+        if ModelPlacement.bases_overlap(a, 0.5, a + direction, 0.5):
+            rounded_contacts_rejected += 1
+    _check_eq(rounded_contacts_rejected, 0, "3600 exact contacts at awkward angles and positions stay legal despite float32 rounding")
+    _check(ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(10.9999, 10.0), 0.5), "a 0.0001 overlap is an overlap")
+    _check(ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(10.99997, 10.0), 0.5), "a 0.00003 overlap is an overlap")
+    _check(ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(10.99, 10.0), 0.5), "a 0.01 overlap is an overlap")
+    _check(not ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(11.0001, 10.0), 0.5), "a 0.0001 gap is legal")
+    var squads: Array[SquadState] = [_formation(&"p1_a", P1, [Vector2(10.0, 10.0)]), _formation(&"p2_b", P2, [Vector2(10.9995, 10.0)])]
+    _check_eq(ModelPlacement.find_overlaps(squads).size(), 1, "layout validation catches a 0.0005 overlap")
+    var a := _formation(&"p1_m", P1, [Vector2(10.0, 20.0)])
+    var b := _formation(&"p2_e", P2, [Vector2(14.0, 20.0)])
+    var f := _terrain_move_fixture([a, b])
+    _check_eq(f.movement.order_move(a, Vector2(13.0005, 20.0)), MovementRules.Result.BLOCKED_BY_MODEL,
+        "an order 0.0005 into another base is refused (order validation and collision agree)")
+    _check_eq(f.movement.order_move(a, Vector2(13.01, 20.0)), MovementRules.Result.BLOCKED_BY_MODEL, "an order 0.01 into it too")
+    _check_eq(f.movement.order_move(a, Vector2(12.9999, 20.0)), MovementRules.Result.OK, "an order leaving a 0.0001 gap is accepted")
+    _check(a.board_position.distance_to(b.board_position) >= 1.0, "and leaves a real gap")
+    _check_eq(f.movement.order_move(a, Vector2(13.0, 20.0)), MovementRules.Result.OK, "closing the gap to exact contact is accepted")
+    _check_eq(a.board_position.distance_to(b.board_position), 1.0, "the bases are in exact contact")
+    _free_fixture(f)
+
+
+func test_approach_stops_at_exact_contact_from_every_angle() -> void:
+    var board := Vector2(48.0, 32.0)
+    var below_contact := 0
+    var short_of_contact := 0
+    var intermediate_overlaps := 0
+    for i in 36:
+        var direction := Vector2.RIGHT.rotated(deg_to_rad(10.0 * i + 0.37))
+        var post := _formation(&"p2_post", P2, [Vector2(24.3, 16.1)])
+        var runner := _formation(&"p1_run", P1, [Vector2(24.3, 16.1) - direction * 3.3])
+        runner.begin_turn_movement(6.0)
+        var observer := func(positions: Dictionary) -> void:
+            for id in positions:
+                if ModelPlacement.bases_overlap(positions[id], 0.5, post.board_position, 0.5):
+                    intermediate_overlaps += 1
+        var plan := SquadMover.plan_shift(runner, direction, 5.0, [runner, post], null, board, observer)
+        var gap := plan.position_of(runner.get_leader()).distance_to(post.board_position) - 1.0
+        if gap < 0.0:
+            below_contact += 1
+        if gap > 0.0001:
+            short_of_contact += 1
+    _check_eq(intermediate_overlaps, 0, "no intermediate position overlaps, from 36 angles")
+    _check_eq(below_contact, 0, "a blocked model never stops inside exact computed contact, not even by rounding")
+    _check_eq(short_of_contact, 0, "it stops in contact, within 0.0001")
+
+
+func test_repeated_movement_toward_contact() -> void:
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0)])
+    var enemy := _formation(&"p2_e", P2, [Vector2(15.0, 12.0)])
+    var f := _terrain_move_fixture([squad, enemy], null, 12.0)
+    var closest := INF
+    for i in 12:
+        _check_eq(f.movement.order_move(squad, Vector2(10.5 + 0.5 * i, 10.0)), MovementRules.Result.OK, "short leg %d" % i)
+        closest = minf(closest, squad.get_model(1).position.distance_to(enemy.board_position))
+        _check(ModelPlacement.find_overlaps([squad, enemy]).is_empty(), "no overlap after leg %d" % i)
+    _check(closest >= 1.0, "pushing a follower into an enemy over 12 legs never goes inside exact contact: %.7f" % closest)
+    _check(closest < 1.0001, "it does reach contact")
+    _free_fixture(f)
+
+
+# --- Task 2.2 follow-up: deterministic ordering ---
+
+## Two equivalent battles: the second stores its models and squads in reverse.
+func _mirrored_battles(points: Array, enemy_points: Array) -> Array:
+    var result := []
+    for reverse in [false, true]:
+        var squad := _formation(&"p1_s", P1, points)
+        var enemy := _formation(&"p2_e", P2, enemy_points)
+        if reverse:
+            squad._models.reverse()
+            enemy._models.reverse()
+            result.append(_terrain_move_fixture([enemy, squad]))
+        else:
+            result.append(_terrain_move_fixture([squad, enemy]))
+    return result
+
+
+func _model_results(squad: SquadState) -> Array:
+    return squad.get_living_models().map(func(m): return [m.model_id, m.position, m.movement_used])
+
+
+func test_movement_independent_of_storage_order() -> void:
+    var points := [Vector2(10.0, 10.0), Vector2(9.0, 11.0), Vector2(11.0, 11.0), Vector2(10.0, 12.0), Vector2(12.0, 11.0)]
+    var enemy_points := [Vector2(15.0, 12.6), Vector2(16.0, 10.0)]
+    var battles := _mirrored_battles(points, enemy_points)
+    var squads := battles.map(func(f): return f.battle.get_squad(&"p1_s"))
+    _check_eq(squads[0].get_leader().model_id, squads[1].get_leader().model_id, "the leader does not depend on storage order")
+    _check_eq(squads[1].get_models().map(func(m): return m.model_id), [0, 1, 2, 3, 4], "models are reported in id order")
+    for destination in [Vector2(14.0, 10.0), Vector2(14.0, 7.0), Vector2(12.0, 6.5)]:
+        for i in 2:
+            battles[i].movement.order_move(squads[i], destination)
+        _check_eq(_model_results(squads[0]), _model_results(squads[1]),
+            "same positions and costs whatever order models and squads are stored in (to %s)" % destination)
+    for f in battles:
+        _check(_no_overlaps(f.battle.get_squads()), "no overlaps")
+        _free_fixture(f)
+
+
+func test_repeated_command_gives_identical_result() -> void:
+    var results := []
+    for run in 3:
+        var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(9.0, 11.0), Vector2(11.0, 11.0), Vector2(10.0, 12.0)])
+        var post := _formation(&"p2_p", P2, [Vector2(13.0, 11.4)])
+        var f := _terrain_move_fixture([squad, post])
+        f.movement.order_move(squad, Vector2(15.0, 9.0))
+        results.append(_model_results(squad))
+        _free_fixture(f)
+    _check(results[0] == results[1] and results[1] == results[2], "the same command three times: identical positions and costs")
+
+
+func test_tied_models_ordered_by_id() -> void:
+    # Three models abreast, perpendicular to travel: equal projections.
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 11.0), Vector2(10.0, 9.0)])
+    var gap_post := _formation(&"p2_p", P2, [Vector2(12.5, 10.5)])
+    var battles := []
+    for reverse in [false, true]:
+        var s := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 11.0), Vector2(10.0, 9.0)])
+        var p := _formation(&"p2_p", P2, [Vector2(12.5, 10.5)])
+        if reverse:
+            s._models.reverse()
+        var f := _terrain_move_fixture([s, p])
+        f.movement.order_move(s, Vector2(10.0, 13.0))
+        battles.append([f, s])
+    _check_eq(_model_results(battles[0][1]), _model_results(battles[1][1]), "ties in travel order resolve the same way")
+    for b in battles:
+        _check(_no_overlaps(b[0].battle.get_squads()), "no overlaps")
+        _free_fixture(b[0])
+
+
+func test_no_model_moves_into_space_still_occupied() -> void:
+    # A follower directly ahead in contact moves first, so the leader behind it
+    # never steps into its space.
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(11.0, 10.0)])
+    var worst := [INF]
+    var observer := func(positions: Dictionary) -> void:
+        worst[0] = minf(worst[0], positions[0].distance_to(positions[1]))
+    squad.begin_turn_movement(6.0)
+    SquadMover.plan_move(squad, Vector2(16.0, 10.0), [squad], null, Vector2(48.0, 32.0), observer)
+    _check(worst[0] >= 1.0 - ModelPlacement.CONTACT_TOLERANCE, "the leader never enters the follower's space mid-move: %.6f" % worst[0])
+    # A follower that cannot move stays an obstacle: the leader, ordered onto
+    # its place, stops in contact rather than assuming it will make way.
+    var pinned := _formation(&"p1_t", P1, [Vector2(13.0, 20.0), Vector2(10.0, 20.0)])
+    var enemy := _formation(&"p2_e", P2, [Vector2(9.0, 20.0)])
+    var f := _terrain_move_fixture([pinned, enemy])
+    _check_eq(f.movement.order_move(pinned, Vector2(10.0, 20.0)), MovementRules.Result.OK,
+        "the order is legal: own followers do not block an order")
+    _check_eq(pinned.get_model(1).position, Vector2(10.0, 20.0), "the follower, blocked by the enemy, cannot move")
+    _check(pinned.get_model(0).position.distance_to(Vector2(11.0, 20.0)) < 0.0001,
+        "the leader stops in contact behind it: %s" % pinned.get_model(0).position)
+    _check(not f.movement.last_plan.leader_reached, "and is reported short")
+    _check(_no_overlaps([pinned, enemy]), "no overlaps")
+    _free_fixture(f)
+
+
+# --- Task 2.2 follow-up: fall-back edge cases ---
+
+func _fall_back_once(squads: Array, broken: SquadState, terrain: TerrainMap = null) -> Dictionary:
+    var f := _morale_fixture(squads, [6, 6])
+    f.morale.terrain = terrain
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    var results := []
+    f.morale.morale_tested.connect(func(r): results.append(r))
+    f.activation.activate(broken)
+    f["results"] = results
+    return f
+
+
+func test_fallback_leader_blocked_by_impassable_is_not_removed() -> void:
+    var broken := _squad_at(&"p1_b", P1, [Vector2(4.0, 12.0), Vector2(4.0, 14.0)])
+    var enemy := _squad_at(&"p2_e", P2, [Vector2(40.0, 16.0)])
+    var wall := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(1.5, 11.0, 2.0, 13.0))])
+    var f := _fall_back_once([broken, enemy], broken, wall)
+    _check(f.battle.get_squad(&"p1_b") != null, "a wall between the leader and the edge keeps the squad on the battlefield")
+    _check(not f.results[0].removed, "not reported removed")
+    _check(broken.get_model(0).position.distance_to(Vector2(2.5, 12.0)) < 0.0001, "the leader stops in contact with the wall: %s" % broken.get_model(0).position)
+    _check(broken.get_model(1).position.distance_to(Vector2(0.5, 14.0)) < 0.0001, "the follower, clear of it, stops at the edge")
+    _check(ModelPlacement.layout_errors([broken, enemy], Vector2(48.0, 32.0), wall).is_empty(), "a valid layout")
+    _free_morale_fixture(f)
+
+
+func test_fallback_leader_cannot_pass_through_own_follower_at_the_edge() -> void:
+    var broken := _squad_at(&"p1_b", P1, [Vector2(3.0, 12.0), Vector2(1.0, 12.0)])
+    var enemy := _squad_at(&"p2_e", P2, [Vector2(40.0, 16.0)])
+    var f := _fall_back_once([broken, enemy], broken)
+    _check(f.battle.get_squad(&"p1_b") != null, "the follower stops at the edge in the leader's way: the leader cannot leave")
+    _check(broken.get_model(1).position.distance_to(Vector2(0.5, 12.0)) < 0.0001, "follower at the edge")
+    _check(broken.get_model(0).position.distance_to(Vector2(1.5, 12.0)) < 0.0001, "leader in contact behind it, on the board")
+    _check(_no_overlaps([broken, enemy]), "no overlaps")
+    _free_morale_fixture(f)
+
+
+func test_fallback_follower_reaching_edge_does_not_remove_squad() -> void:
+    var broken := _squad_at(&"p1_b", P1, [Vector2(10.0, 12.0), Vector2(3.0, 15.0)])
+    var enemy := _squad_at(&"p2_e", P2, [Vector2(40.0, 16.0)])
+    var f := _fall_back_once([broken, enemy], broken)
+    _check(f.battle.get_squad(&"p1_b") != null, "a follower reaching the edge does not remove the squad")
+    _check_eq(broken.get_model_count(), 2, "nobody is removed")
+    _check(broken.get_model(0).position.distance_to(Vector2(4.0, 12.0)) < 0.0001, "the leader moves its full 6")
+    _check(broken.get_model(1).position.distance_to(Vector2(0.5, 15.0)) < 0.0001, "the follower stops at the edge")
+    _free_morale_fixture(f)
+
+
+func test_fallback_blocked_squad_state_and_accounting() -> void:
+    var trapped := _squad_at(&"p1_t", P1, [Vector2(10.0, 12.0), Vector2(14.0, 12.0)])
+    var cage := _squad_at(&"p2_c", P2, [Vector2(9.0, 12.0), Vector2(10.0, 11.0), Vector2(10.0, 13.0), Vector2(11.0, 12.0)])
+    var f := _fall_back_once([trapped, cage], trapped)
+    _check_eq(trapped.get_model(0).position, Vector2(10.0, 12.0), "the caged leader stays where it is")
+    _check(trapped.get_model(1).position.distance_to(Vector2(12.0, 12.0)) < 0.0001,
+        "its follower moves until it meets the cage: %s" % trapped.get_model(1).position)
+    _check_eq(trapped.get_model(0).movement_used, 0.0, "the blocked leader spent nothing")
+    _check(absf(trapped.get_model(1).movement_used - 2.0) < 0.0001, "the follower is charged the 2 it moved")
+    _check(trapped.movement_complete, "movement is complete after falling back")
+    _check_eq(f.activation.active_squad, null, "the activation ended")
+    _check(trapped in f.activation.get_activated_squads(), "and counts as spent")
+    _check(f.results[0].fell_back and not f.results[0].removed, "reported as a fall-back, not a removal")
+    _check(_no_overlaps([trapped, cage]), "a valid state: no overlaps")
+    _free_morale_fixture(f)
+
+
+func test_fallback_is_deterministic() -> void:
+    var outcomes := []
+    for reverse in [false, true]:
+        var broken := _squad_at(&"p1_b", P1, [Vector2(6.0, 12.0), Vector2(5.0, 13.0), Vector2(5.0, 11.0), Vector2(7.0, 12.0)])
+        var block := _squad_at(&"p2_k", P2, [Vector2(2.0, 12.4), Vector2(2.0, 10.6)])
+        if reverse:
+            broken._models.reverse()
+            block._models.reverse()
+        var f := _fall_back_once([block, broken] if reverse else [broken, block], broken)
+        outcomes.append(_model_results(broken))
+        _check(_no_overlaps([broken, block]), "no overlaps")
+        _free_morale_fixture(f)
+    _check_eq(outcomes[0], outcomes[1], "fall-back gives the same positions and costs whatever the storage order")
+

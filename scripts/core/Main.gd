@@ -11,6 +11,8 @@ class_name Main
 
 var battle := BattleState.new()
 var terrain: TerrainMap
+## Why the starting squad layout was rejected; empty if it is legal.
+var layout_errors := PackedStringArray()
 ## Shared by shooting and assault for the defender's casualty allocation.
 var casualties := CasualtyAllocator.new()
 
@@ -33,8 +35,17 @@ func _ready() -> void:
     # TerrainMap and leaves the battlefield without terrain.
     terrain = TerrainMap.new(terrain_setups)
     terrain_layer.bind(terrain)
+    # Starting positions are validated before the battle begins; an invalid
+    # layout is rejected whole, never rearranged, and the game does not start.
+    var squads: Array[SquadState] = []
     for setup in squad_setups:
-        battle.add_squad(SquadState.new(setup.squad, setup.start_position))
+        squads.append(SquadState.new(setup.squad, setup.start_position))
+    layout_errors = ModelPlacement.layout_errors(squads, game_board.board_size, terrain)
+    for error in layout_errors:
+        push_error("Invalid starting layout: %s" % error)
+    if layout_errors.is_empty():
+        for state in squads:
+            battle.add_squad(state)
     squad_layer.bind_battle(battle)
     selection.bind_battle(battle)
     activation.bind(battle, turn_manager)
@@ -47,6 +58,7 @@ func _ready() -> void:
     assault.bind(turn_manager, activation, battle, casualties)
     assault.terrain = terrain
     morale.bind(battle, turn_manager, activation, game_board.board_size)
+    morale.terrain = terrain
     hud.bind_turn_manager(turn_manager)
     hud.bind_terrain(terrain)
     hud.bind_selection(selection)
@@ -65,7 +77,10 @@ func _ready() -> void:
     movement.move_rejected.connect(_on_move_rejected)
     turn_manager.phase_changed.connect(_on_phase_changed)
     activation.activation_changed.connect(_on_activation_changed)
-    turn_manager.start_game()
+    if layout_errors.is_empty():
+        turn_manager.start_game()
+    else:
+        hud.show_setup_error("Invalid starting layout: %s" % layout_errors[0])
 
 
 func _on_destination_clicked(board_point: Vector2) -> void:

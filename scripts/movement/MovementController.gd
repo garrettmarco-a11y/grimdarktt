@@ -13,6 +13,8 @@ var board_size := Vector2.ZERO
 var activation: ActivationController
 ## Battlefield terrain for difficult and impassable movement; none if null.
 var terrain: TerrainMap
+## How the models moved on the last accepted order.
+var last_plan: SquadMover.Plan
 
 var _battle: BattleState
 var _turn_manager: TurnManager
@@ -28,24 +30,36 @@ func bind(battle: BattleState, turn_manager: TurnManager, board_units: Vector2) 
         _begin_squad_turn(state)
 
 
-## Orders `state` to move to `destination` (board units). Returns the result;
-## only an OK order changes the squad's state.
+## Orders `state`'s leader to move to `destination` (board units); the
+## followers make for their formation slots. Returns the result; only an OK
+## order changes the squad's state. The resolved plan is kept in last_plan.
 func order_move(state: SquadState, destination: Vector2) -> MovementRules.Result:
     var activated := activation == null or activation.is_active_squad(state)
-    var result := MovementRules.validate(state, destination, _turn_manager.current_phase, board_size, activated, terrain)
+    var result := MovementRules.validate(state, destination, _turn_manager.current_phase, board_size, activated,
+        terrain, _battle.get_squads())
     if result != MovementRules.Result.OK:
         move_rejected.emit(state, destination, result)
         return result
     var from := state.board_position
-    var cost := MovementRules.movement_cost(state, destination, terrain)
-    state.apply_move(destination, cost >= state.movement_allowance - MovementRules.EPSILON, cost)
-    move_ordered.emit(state, from, destination)
+    last_plan = SquadMover.plan_move(state, destination, _battle.get_squads(), terrain, board_size)
+    var leader := state.get_leader()
+    var leader_left := state.movement_allowance - leader.movement_used - last_plan.cost_of(leader)
+    state.apply_model_moves(last_plan.moves, leader_left <= MovementRules.EPSILON)
+    _check_layout()
+    move_ordered.emit(state, from, state.board_position)
     return result
 
 
-## Allowance a move of `state` to `destination` would use, for feedback.
+## Allowance the leader would spend on a move to `destination`, for feedback.
 func order_cost(state: SquadState, destination: Vector2) -> float:
-    return MovementRules.movement_cost(state, destination, terrain)
+    return MovementRules.leader_cost(state, destination, terrain)
+
+
+## Movement must never leave bases overlapping; report it if it ever does.
+func _check_layout() -> void:
+    for pair in ModelPlacement.find_overlaps(_battle.get_squads()):
+        push_error("MovementController: %s overlaps %s" % [ModelPlacement.describe(pair[0], pair[1]),
+            ModelPlacement.describe(pair[2], pair[3])])
 
 
 func _on_turn_started(_turn: int) -> void:

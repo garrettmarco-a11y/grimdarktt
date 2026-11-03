@@ -1,8 +1,9 @@
 extends Node2D
 class_name MovementOverlay
-## Draws movement guidance for the selected squad under the squad tokens: its
-## movement range from the turn-start position, the line it has moved this
-## turn, and a brief marker where an order was rejected.
+## Draws movement guidance for the selected squad under the squad tokens: the
+## leader's remaining movement range from where it stands (movement is paid
+## along the path travelled), the line from where it began the turn, and a
+## brief marker where an order was rejected.
 ##
 ## Must be a direct child of a GameBoard. Reads SquadState; changes nothing.
 
@@ -72,9 +73,9 @@ func _draw() -> void:
         var start := board.units_to_pixels(_squad.turn_start_position)
         var current := board.units_to_pixels(_squad.board_position)
         if not _squad.movement_complete:
-            var radius := _squad.movement_allowance * board.pixels_per_unit
-            draw_circle(start, radius, RANGE_COLOR)
-            draw_circle(start, radius, RANGE_EDGE_COLOR, false, 1.5)
+            var radius := _squad.get_remaining_movement() * board.pixels_per_unit
+            draw_circle(current, radius, RANGE_COLOR)
+            draw_circle(current, radius, RANGE_EDGE_COLOR, false, 1.5)
         if start != current:
             draw_circle(start, 3.0, PATH_COLOR)
             draw_line(start, current, PATH_COLOR, 2.0)

@@ -123,6 +123,31 @@ func crosses_impassable(from: Vector2, to: Vector2) -> bool:
     return false
 
 
+## True if a model base of `radius` swept from `from` to `to` (or standing at
+## `from` when they are equal) overlaps any impassable_area. Touching is fine,
+## within `tolerance` for float rounding (ModelPlacement.CONTACT_TOLERANCE by
+## default, the same allowance as base-to-base contact; 0 for exact contact).
+func base_crosses_impassable(from: Vector2, to: Vector2, radius: float,
+        tolerance := ModelPlacement.CONTACT_TOLERANCE) -> bool:
+    for placed in _placed:
+        if TerrainGeometry.swept_circle_overlaps(from, to, radius, placed.impassable_area, tolerance):
+            return true
+    return false
+
+
+## The point on any impassable_area's boundary nearest `point`, or null if
+## there is no impassable terrain.
+func nearest_impassable_point(point: Vector2) -> Variant:
+    var best = null
+    for placed in _placed:
+        var polygon := placed.impassable_area
+        for i in polygon.size():
+            var candidate := Geometry2D.get_closest_point_to_segment(point, polygon[i], polygon[(i + 1) % polygon.size()])
+            if best == null or point.distance_to(candidate) < point.distance_to(best):
+                best = candidate
+    return best
+
+
 func _place(piece: TerrainPiece, position: Vector2, rotation: float) -> Placed:
     var placed := Placed.new()
     placed.piece = piece

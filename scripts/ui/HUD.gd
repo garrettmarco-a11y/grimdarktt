@@ -68,9 +68,21 @@ func bind_casualties(allocator: CasualtyAllocator) -> void:
     allocation_panel.bind(allocator)
 
 
+## Shows why the battle could not start.
+func show_setup_error(message: String) -> void:
+    order_feedback.modulate = Color(1.0, 0.45, 0.4)
+    order_feedback.text = message
+
+
 func _on_move_ordered(state: SquadState, _from: Vector2, _to: Vector2) -> void:
     order_feedback.modulate = Color.WHITE
     order_feedback.text = "%s moving (%.1f left)" % [state.data.display_name, state.get_remaining_movement()]
+    var plan := _movement.last_plan if _movement else null
+    if plan and not plan.fell_short.is_empty():
+        order_feedback.text += "; %d model%s could not reach formation" % [plan.fell_short.size(),
+            "" if plan.fell_short.size() == 1 else "s"]
+    if not CohesionRules.is_coherent(state):
+        order_feedback.text += "; %s" % CohesionRules.describe(state).to_lower()
 
 
 func _on_move_rejected(state: SquadState, destination: Vector2, result: MovementRules.Result) -> void:
@@ -88,10 +100,12 @@ func _on_move_rejected(state: SquadState, destination: Vector2, result: Movement
             order_feedback.text = "Destination is off the battlefield"
         MovementRules.Result.OUT_OF_RANGE:
             var cost := _movement.order_cost(state, destination) if _movement \
-                else MovementRules.distance(state.turn_start_position, destination)
-            order_feedback.text = "Out of range: %.1f > %s" % [cost, String.num(state.movement_allowance)]
+                else MovementRules.distance(state.board_position, destination)
+            order_feedback.text = "Out of range: %.1f > %.1f left" % [cost, state.get_remaining_movement()]
         MovementRules.Result.IMPASSABLE:
             order_feedback.text = "Path blocked by impassable terrain"
+        MovementRules.Result.BLOCKED_BY_MODEL:
+            order_feedback.text = "Path blocked by another squad's model"
 
 
 func _on_attack_resolved(result: CombatResult) -> void:

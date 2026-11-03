@@ -98,20 +98,33 @@ func _sync_token_position(state: SquadState) -> void:
     var board := get_parent() as GameBoard
     if token and board:
         token.target_position = board.units_to_pixels(state.board_position)
+        token.model_offsets = _model_offsets(state, board)
 
 
-## Redraws the token's living models around its anchor. A casualty can move the
-## anchor to a new leader, so the token jumps there rather than gliding.
+## Redraws the token's living models around its anchor, at their base sizes.
+## A casualty can move the anchor to a new leader, so the token jumps there
+## rather than gliding.
 func _sync_token_models(state: SquadState) -> void:
     var token: SquadToken = _tokens.get(state.squad_id)
     var board := get_parent() as GameBoard
     if token == null or board == null:
         return
+    token.target_position = board.units_to_pixels(state.board_position)
+    token.model_offsets = _model_offsets(state, board)
+    var radii: Array[float] = []
+    for model in state.get_living_models():
+        radii.append(model.get_base_radius() * board.pixels_per_unit)
+    token.model_radii = radii
+    token.radius = radii[0] if not radii.is_empty() else token.radius
+    token.snap_to_target()
+
+
+## Each living model's position relative to the anchor, in pixels.
+func _model_offsets(state: SquadState, board: GameBoard) -> Array[Vector2]:
     var offsets: Array[Vector2] = []
     for model in state.get_living_models():
-        offsets.append(board.units_to_pixels(model.offset))
-    token.model_offsets = offsets
-    token.snap_to_target()
+        offsets.append(board.units_to_pixels(model.position - state.board_position))
+    return offsets
 
 
 func _sync_token_morale(state: SquadState) -> void:
