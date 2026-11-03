@@ -4055,3 +4055,31 @@ func test_cohesion_shown_in_info_panel_and_feedback() -> void:
     main.queue_free()
     await process_frame
 
+
+# --- Task 2.2: tokens follow individual positions ---
+
+func test_tokens_draw_individual_models() -> void:
+    var main: Node = await _load_main()
+    var layer: SquadLayer = main.squad_layer
+    var board: GameBoard = main.game_board
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var token := layer.get_token(&"p1_line_squad")
+    _check_eq(token.model_radii.size(), 4, "one base per living model")
+    _check_eq(token.model_radii[0], 0.5 * board.pixels_per_unit, "bases drawn at their true size")
+    var follower := line.get_model(3)
+    _check_eq(layer.token_at(board.units_to_pixels(follower.position)), token, "clicking a follower's base hits its squad")
+    _check_eq(layer.token_at(board.units_to_pixels(follower.position) + Vector2(14.0, 0.0)), null,
+        "just beyond the base is empty space")
+    main.activation.activate(line)
+    _check_eq(main.movement.order_move(line, Vector2(15.0, 16.0)), MovementRules.Result.OK, "move the squad 3 east")
+    _check(token.is_moving(), "every model glides")
+    token.advance(100.0)
+    var drawn := []
+    for i in token.model_offsets.size():
+        drawn.append(token.position + token.model_offsets[i])
+    var authoritative := line.get_living_models().map(func(m): return board.units_to_pixels(m.position))
+    _check_eq(drawn, authoritative, "each model ends drawn at its own authoritative position")
+    _check(not token.is_moving(), "and stops")
+    main.queue_free()
+    await process_frame
+
