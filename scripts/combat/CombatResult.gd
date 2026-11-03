@@ -55,6 +55,26 @@ var allocations: Array[Allocation] = []
 var wasted_wounds := 0
 var models_remaining := 0
 var target_destroyed := false
+## Position of this strike in an allocation queue (1-based) and the queue's
+## length; 0 outside queue mode. Set by CasualtyAllocator.enqueue.
+var strike_index := 0
+var strike_count := 0
+## The tracker engagement this strike belongs to; -1 outside an engagement.
+var engagement_id := -1
+
+
+## The player who allocates this strike's unsaved wounds: the target's owner.
+func get_allocating_player() -> int:
+    return target_squad.get_player() if target_squad else 0
+
+
+## "Line Squad's strike on Raider Squad (2 of 3)", for allocation prompts.
+func describe_strike() -> String:
+    var text := "%s's %s on %s" % [attacker_squad.data.display_name if attacker_squad else "?",
+        "strike" if attack_type == AttackType.MELEE else "shooting", target_squad.data.display_name if target_squad else "?"]
+    if strike_count > 0:
+        text += " (%d of %d)" % [strike_index, strike_count]
+    return text
 
 
 func get_eligible_count() -> int:

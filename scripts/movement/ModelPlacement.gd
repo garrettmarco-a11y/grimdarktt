@@ -24,6 +24,27 @@ class_name ModelPlacement
 const CONTACT_TOLERANCE := 0.00001
 
 
+## Largest edge-to-edge gap, in board units, at which two bases count as in
+## base-to-base contact for engagements. A rules threshold, deliberately
+## separate from CONTACT_TOLERANCE (which only absorbs float rounding in
+## overlap checks): movement stops bases at exact computed contact, and this
+## lets such contact register however the rounding falls.
+const ENGAGEMENT_CONTACT := 0.001
+
+
+## True if the two bases are in base-to-base contact: their edges at most
+## ENGAGEMENT_CONTACT apart, with CONTACT_TOLERANCE added only so float32
+## rounding cannot push a gap of exactly ENGAGEMENT_CONTACT just over it.
+## (Bases never overlap; an overlap would also count.)
+static func in_base_contact(a: Vector2, a_radius: float, b: Vector2, b_radius: float) -> bool:
+    return a.distance_to(b) - a_radius - b_radius <= ENGAGEMENT_CONTACT + CONTACT_TOLERANCE
+
+
+## True if two living models are in base-to-base contact.
+static func models_in_contact(a: ModelState, b: ModelState) -> bool:
+    return in_base_contact(a.position, a.get_base_radius(), b.position, b.get_base_radius())
+
+
 ## True if two bases overlap (touching is allowed).
 static func bases_overlap(a: Vector2, a_radius: float, b: Vector2, b_radius: float) -> bool:
     return a.distance_to(b) < a_radius + b_radius - CONTACT_TOLERANCE

@@ -35,6 +35,10 @@ const STEP := 0.2
 const MIN_PROGRESS := 0.001
 ## Allowance tolerance, as in MovementRules.
 const EPSILON := 0.001
+## Extra clearance a charging model keeps from enemy squads other than its
+## target: just beyond base-contact range (ENGAGEMENT_CONTACT plus its
+## rounding allowance), so a charge can never make incidental contact.
+const CHARGE_KEEP_OUT := ModelPlacement.ENGAGEMENT_CONTACT + 3.0 * ModelPlacement.CONTACT_TOLERANCE
 const BISECTION_STEPS := 32
 const MAX_ITERATIONS := 5000
 
@@ -107,29 +111,78 @@ static func plan_shift(squad: SquadState, direction: Vector2, distance: float, o
         leader_exit != null)
 
 
+## Plans a charge by `squad` against `target`: every living model heads for
+## the target model nearest it when the charge begins (ChargeRules), moving at
+## most `distance` and paying double inside difficult terrain, from a fresh
+## budget that ignores Movement-phase use. Models stop on contact with the
+## target; every model may slide once per step around an obstacle; impassable
+## terrain, the board edge and every base still block, and enemy squads other
+## than the target cannot be brought into base contact at all.
+static func plan_charge(squad: SquadState, target: SquadState, distance: float, others: Array,
+        terrain: TerrainMap, board_size: Vector2, observer := Callable()) -> Plan:
+    var targets := {}
+    var heading := Vector2.ZERO
+    for model in squad.get_living_models():
+        var aim := ChargeRules.nearest_target_model(model, target)
+        targets[model.model_id] = aim.position if aim else model.position
+    var leader := squad.get_leader()
+    if leader:
+        heading = targets[leader.model_id] - leader.position
+    return _resolve(squad, targets, heading, others, terrain, board_size, true, -1.0, distance, observer, false, target)
+
+
+## Plans consolidation for `squad` after an engagement: every model listed in
+## `moving` heads for the living model of `target` nearest it (ChargeRules'
+## nearest-model rule, fixed for the move) up to `distance`, ignoring
+## difficult terrain; squad-mates not listed (those already in base contact)
+## stay where they are and block like any base. Impassable terrain, the board
+## edge and every base still block, every moving model may slide once per
+## step, and models stop on contact. Contact with any enemy is allowed.
+static func plan_consolidate(squad: SquadState, moving: Array, target: SquadState, distance: float, others: Array,
+        terrain: TerrainMap, board_size: Vector2, observer := Callable()) -> Plan:
+    var targets := {}
+    var heading := Vector2.ZERO
+    for model in moving:
+        var aim := ChargeRules.nearest_target_model(model, target)
+        targets[model.model_id] = aim.position if aim else model.position
+        if heading == Vector2.ZERO and aim:
+            heading = aim.position - model.position
+    return _resolve(squad, targets, heading, others, terrain, board_size, false, -1.0, distance, observer, false, null, true)
+
+
 static func _resolve(squad: SquadState, targets: Dictionary, direction: Vector2, others: Array,
         terrain: TerrainMap, board_size: Vector2, pay_terrain: bool, allowance: float,
-        fixed_budget: float, observer: Callable, leader_leaves := false) -> Plan:
+        fixed_budget: float, observer: Callable, leader_leaves := false, charge_target: SquadState = null,
+        all_slide := false) -> Plan:
     var leader := squad.get_leader()
     var movers: Array[_Mover] = []
     var models := squad.get_living_models()
     models.sort_custom(func(a: ModelState, b: ModelState) -> bool: return a.model_id < b.model_id)
+    var obstacles := []
     for model in models:
+        if not targets.has(model.model_id):
+            # A squad-mate that is not moving stands where it is, as an obstacle.
+            obstacles.append([model.position, model.get_base_radius()])
+            continue
         var mover := _Mover.new()
         mover.model = model
         mover.position = model.position
         mover.radius = model.get_base_radius()
         mover.target = targets[model.model_id]
         mover.budget = maxf(allowance - model.movement_used, 0.0) if allowance >= 0.0 else fixed_budget
-        mover.may_slide = model != leader
+        mover.may_slide = model != leader or charge_target != null or all_slide
         mover.may_leave_board = leader_leaves and model == leader
         movers.append(mover)
-    var obstacles := []
     for other in others:
         if other == squad:
             continue
+        # A charge may touch only its declared target: every other enemy squad
+        # is kept out beyond base-contact range.
+        var keep_out := 0.0
+        if charge_target != null and other != charge_target and other.get_player() != squad.get_player():
+            keep_out = CHARGE_KEEP_OUT
         for model in other.get_living_models():
-            obstacles.append([model.position, model.get_base_radius()])
+            obstacles.append([model.position, model.get_base_radius() + keep_out])
     var heading := direction.normalized() if direction.length() > EPSILON else Vector2.ZERO
     for iteration in MAX_ITERATIONS:
         var active := movers.filter(func(m: _Mover) -> bool: return not m.stopped)

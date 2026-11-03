@@ -64,7 +64,8 @@ var movement_used: float:
 var distance_moved: float:
     get:
         return turn_start_position.distance_to(board_position)
-## True once the squad has lost a model since its last Morale phase activation.
+## True once the squad has lost a model to non-melee damage since its last
+## Morale phase activation; melee casualties never set it (see take_wound).
 var lost_models_since_morale := false
 ## Current morale condition; changed by MoraleController.
 var morale_status := MoraleStatus.STEADY:
@@ -73,8 +74,8 @@ var morale_status := MoraleStatus.STEADY:
             return
         morale_status = value
         morale_changed.emit(self)
-## True for the rest of the turn after consolidating or taking a rally test:
-## the squad may not shoot or initiate an assault. Reset at each turn start.
+## True for the rest of the turn after regrouping or taking a rally test:
+## the squad may not shoot or charge. Reset at each turn start.
 var morale_restricted_this_turn := false:
     set(value):
         if value == morale_restricted_this_turn:
@@ -133,6 +134,19 @@ func place_formation(anchor: Vector2) -> void:
     position_changed.emit(self)
 
 
+## Moves living models to new positions without touching movement tracking,
+## for charges and consolidation, which do not use the Movement allowance.
+## `positions` maps model_id -> position, resolved by SquadMover.
+func place_models(positions: Dictionary) -> void:
+    for model_id in positions:
+        var model := get_model(model_id)
+        if model == null or model.removed:
+            push_error("SquadState.place_models: model %d is not a living model" % model_id)
+            continue
+        model.position = positions[model_id]
+    position_changed.emit(self)
+
+
 ## Moves models individually. `moves` maps a living model's id to
 ## [new position, cost of the path it travelled]; each cost is added to that
 ## model's movement_used. `complete` records whether the squad may move again
@@ -152,7 +166,7 @@ func apply_model_moves(moves: Dictionary, complete: bool) -> void:
 
 
 ## Caps this turn's allowance at `allowance` (never raises it), e.g. half
-## movement after consolidating or rallying.
+## movement after regrouping or rallying.
 func limit_movement_allowance(allowance: float) -> void:
     if allowance >= movement_allowance:
         return
@@ -230,9 +244,13 @@ func get_model_position(model: ModelState) -> Vector2:
 
 ## Applies one point of damage to the living model `model_id`. A model at 0
 ## wounds is removed; if it was the leader, the next survivor takes over (see
-## _promote_leader). The caller (ShootingController) validates the allocation
-## with DamageRules first. Returns true if the model was removed.
-func take_wound(model_id: int) -> bool:
+## get_leader). The caller (CasualtyAllocator) validates the allocation with
+## DamageRules first. Returns true if the model was removed.
+## `counts_for_morale` says whether a model removed here makes the squad take
+## its ordinary Morale-phase test: true for shooting and other non-melee
+## damage, false for melee casualties, which are settled by the assault-loss
+## test instead.
+func take_wound(model_id: int, counts_for_morale := true) -> bool:
     var model := get_model(model_id)
     if model == null or model.removed:
         push_error("SquadState.take_wound: model %d is not a living model" % model_id)
@@ -244,7 +262,8 @@ func take_wound(model_id: int) -> bool:
         if was_leader:
             _remember_leader(model)
         model.removed = true
-        lost_models_since_morale = true
+        if counts_for_morale:
+            lost_models_since_morale = true
     models_changed.emit(self)
     return model.removed
 

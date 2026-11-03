@@ -9,10 +9,15 @@ class_name ActivationController
 ## squads have activated this phase.
 ##
 ## Eligibility (approved by the project lead):
-##   - Movement, Shooting and Assault: every squad on the battlefield.
-##   - Morale: only squads that lost models (or, later, lost an assault) since
-##     their last Morale activation. A squad's loss flag clears when its Morale
-##     activation ends. With no eligible squads the phase passes straight away.
+##   - Movement and Shooting: every squad on the battlefield.
+##   - Morale: only squads that lost models since their last Morale
+##     activation. A squad's loss flag clears when its Morale activation ends.
+##   - Charge: squads that may declare a charge, decided by `charge_rule`
+##     (see ChargeRules.can_declare_any). Eligibility can be lost mid-phase,
+##     e.g. by being charged; withdraw() then removes the squad's waiting
+##     activation.
+##   - Procedure phases (Assault, Consolidation): no squad activates.
+##   With no eligible squads an activation phase passes straight away.
 
 signal activation_changed
 ## A squad's activation has just started; e.g. MoraleController runs mandatory
@@ -30,10 +35,18 @@ var locked := false:
         locked = value
         activation_changed.emit()
 
+## Decides Charge-phase eligibility: Callable(state: SquadState) -> bool.
+## No squad is eligible while it is unset.
+var charge_rule := Callable()
+
 var _battle: BattleState
 var _turn_manager: TurnManager
 ## Squad ids that have completed an activation in the current phase.
 var _activated: Dictionary = {}
+## Squad ids whose waiting activation was withdrawn this phase.
+var _withdrawn: Dictionary = {}
+## Squad ids counted as eligible when the current phase began.
+var _counted: Dictionary = {}
 
 
 func bind(battle: BattleState, turn_manager: TurnManager) -> void:
@@ -47,6 +60,33 @@ func bind(battle: BattleState, turn_manager: TurnManager) -> void:
 static func is_eligible(state: SquadState, phase: TurnManager.Phase) -> bool:
     if phase == TurnManager.Phase.MORALE:
         return state.lost_models_since_morale
+    if phase == TurnManager.Phase.CHARGE:
+        return false  # Charge eligibility needs battle context: see is_squad_eligible.
+    return true
+
+
+## Whether `state` may activate in `phase`, including the Charge rule.
+func is_squad_eligible(state: SquadState, phase: TurnManager.Phase) -> bool:
+    if _turn_manager and _turn_manager.is_procedure(phase):
+        return false
+    if phase == TurnManager.Phase.CHARGE:
+        return charge_rule.is_valid() and charge_rule.call(state) and not _withdrawn.has(state.squad_id)
+    return is_eligible(state, phase)
+
+
+## Removes the waiting activation of `state`, which has just become ineligible
+## in the current phase (e.g. it was charged before it could declare). Does
+## nothing if it has activated, is activating, or was already withdrawn.
+func withdraw(state: SquadState) -> bool:
+    if state == null or has_activated(state) or is_active_squad(state) or _withdrawn.has(state.squad_id):
+        return false
+    if _turn_manager.state != TurnManager.State.IN_PHASE and _turn_manager.state != TurnManager.State.ACTIVATION_IN_PROGRESS:
+        return false
+    if not _counted.has(state.squad_id):
+        return false
+    _withdrawn[state.squad_id] = true
+    _turn_manager.remove_squad_activation(state.get_player())
+    activation_changed.emit()
     return true
 
 
@@ -87,7 +127,7 @@ func can_activate(state: SquadState) -> Result:
         return Result.ALREADY_ACTIVATED
     if state.get_player() != _turn_manager.active_player:
         return Result.WRONG_PLAYER
-    if not is_eligible(state, _turn_manager.current_phase):
+    if not is_squad_eligible(state, _turn_manager.current_phase):
         return Result.NOT_ELIGIBLE
     return Result.OK
 
@@ -127,15 +167,23 @@ func _on_turn_manager_activation_ended(_player: int, phase: TurnManager.Phase) -
 
 func _on_phase_changed(phase: TurnManager.Phase, _turn: int) -> void:
     _activated.clear()
+    _withdrawn.clear()
+    _counted.clear()
     active_squad = null
+    if _turn_manager.is_procedure(phase):
+        # Procedure phases run their own procedure (TurnManager); no squad
+        # activates in them.
+        activation_changed.emit()
+        return
     if _battle.get_squads().is_empty():
         # Nothing can ever activate; starting phases would cycle forever.
         activation_changed.emit()
         return
     var counts := {TurnManager.PLAYER_ONE: 0, TurnManager.PLAYER_TWO: 0}
     for state in _battle.get_squads():
-        if is_eligible(state, phase) and counts.has(state.get_player()):
+        if is_squad_eligible(state, phase) and counts.has(state.get_player()):
             counts[state.get_player()] += 1
+            _counted[state.squad_id] = true
     activation_changed.emit()
     # May end the phase at once (e.g. Morale with no tests), which re-enters here.
     _turn_manager.begin_phase(counts[TurnManager.PLAYER_ONE], counts[TurnManager.PLAYER_TWO])
@@ -145,7 +193,7 @@ func _on_phase_changed(phase: TurnManager.Phase, _turn: int) -> void:
 func _on_squad_removed(state: SquadState) -> void:
     if is_active_squad(state):
         end_activation()
-    elif not has_activated(state) and is_eligible(state, _turn_manager.current_phase) \
+    elif not has_activated(state) and _counted.has(state.squad_id) and not _withdrawn.has(state.squad_id) \
             and (_turn_manager.state == TurnManager.State.IN_PHASE
                 or _turn_manager.state == TurnManager.State.ACTIVATION_IN_PROGRESS):
         _turn_manager.remove_squad_activation(state.get_player())

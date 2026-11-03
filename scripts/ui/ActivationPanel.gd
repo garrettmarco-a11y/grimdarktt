@@ -2,7 +2,7 @@ extends PanelContainer
 class_name ActivationPanel
 ## Shows who may activate, the active squad and the squads already activated
 ## this phase, with one button to activate the selected squad or end the
-## current activation, plus a Consolidate button for a Shaken squad. It only
+## current activation, plus a Regroup button for a Shaken squad. It only
 ## reads state and sends orders to the ActivationController and
 ## MoraleController; it never changes game state itself.
 
@@ -11,7 +11,7 @@ class_name ActivationPanel
 @onready var activated_label: Label = %ActivatedLabel
 @onready var action_button: Button = %ActionButton
 @onready var hint_label: Label = %HintLabel
-@onready var consolidate_button: Button = %ConsolidateButton
+@onready var regroup_button: Button = %RegroupButton
 
 var _activation: ActivationController
 var _selection: SelectionManager
@@ -24,13 +24,13 @@ func bind(activation: ActivationController, selection: SelectionManager) -> void
     activation.activation_changed.connect(refresh)
     selection.selection_changed.connect(func(_state): refresh())
     action_button.pressed.connect(_on_action_pressed)
-    consolidate_button.pressed.connect(_on_consolidate_pressed)
+    regroup_button.pressed.connect(_on_regroup_pressed)
     refresh()
 
 
 func bind_morale(morale: MoraleController) -> void:
     _morale = morale
-    morale.consolidated.connect(func(_state): refresh())
+    morale.regrouped.connect(func(_state): refresh())
     morale.morale_tested.connect(func(_result): refresh())
     refresh()
 
@@ -47,24 +47,24 @@ func refresh() -> void:
         names.append(state.data.display_name)
     activated_label.text = "Done: %s" % (", ".join(names) if not names.is_empty() else "none")
 
-    consolidate_button.visible = _morale != null and active != null \
-        and _morale.can_consolidate(active) == MoraleController.ConsolidateResult.OK
+    regroup_button.visible = _morale != null and active != null \
+        and _morale.can_regroup(active) == MoraleController.RegroupResult.OK
     if active:
         action_button.text = "End activation"
         action_button.disabled = _activation.locked
         if _activation.locked:
             hint_label.text = "Waiting for wound allocation"
             return
-        if not MoraleRules.may_attack(active) and _activation.get_phase() in [TurnManager.Phase.SHOOTING, TurnManager.Phase.ASSAULT]:
-            hint_label.text = "Morale: cannot shoot or assault this turn"
+        if not MoraleRules.may_attack(active) and _activation.get_phase() == TurnManager.Phase.SHOOTING:
+            hint_label.text = "Morale: cannot shoot this turn"
             return
         match _activation.get_phase():
             TurnManager.Phase.MOVEMENT:
                 hint_label.text = "Right-click to move"
             TurnManager.Phase.SHOOTING:
                 hint_label.text = "Right-click an enemy squad to shoot"
-            TurnManager.Phase.ASSAULT:
-                hint_label.text = "Right-click an enemy squad to assault"
+            TurnManager.Phase.CHARGE:
+                hint_label.text = "Right-click an enemy squad to charge, or end to hold"
             _:
                 hint_label.text = ""
         return
@@ -94,6 +94,6 @@ func _on_action_pressed() -> void:
         _activation.activate(_selection.selected_squad)
 
 
-func _on_consolidate_pressed() -> void:
+func _on_regroup_pressed() -> void:
     if _morale and _activation.active_squad:
-        _morale.consolidate(_activation.active_squad)
+        _morale.regroup(_activation.active_squad)

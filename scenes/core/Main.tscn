@@ -1,4 +1,4 @@
-[gd_scene load_steps=30 format=3]
+[gd_scene load_steps=29 format=3]
 
 [ext_resource type="Script" path="res://scripts/core/Main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://scenes/core/GameBoard.tscn" id="2_board"]
@@ -13,7 +13,6 @@
 [ext_resource type="Script" path="res://scripts/movement/MovementController.gd" id="11_movement"]
 [ext_resource type="Script" path="res://scripts/core/ActivationController.gd" id="12_activation"]
 [ext_resource type="Script" path="res://scripts/shooting/ShootingController.gd" id="13_shooting"]
-[ext_resource type="Script" path="res://scripts/assault/AssaultController.gd" id="14_assault"]
 [ext_resource type="Script" path="res://scripts/morale/MoraleController.gd" id="15_morale"]
 [ext_resource type="Script" path="res://scripts/terrain/TerrainSetup.gd" id="16_terrain_setup"]
 [ext_resource type="Script" path="res://scripts/terrain/TerrainLayer.gd" id="17_layer"]
@@ -95,9 +94,6 @@ script = ExtResource("12_activation")
 
 [node name="ShootingController" type="Node" parent="."]
 script = ExtResource("13_shooting")
-
-[node name="AssaultController" type="Node" parent="."]
-script = ExtResource("14_assault")
 
 [node name="MoraleController" type="Node" parent="."]
 script = ExtResource("15_morale")

@@ -1,6 +1,6 @@
 extends Node
 class_name MoraleController
-## Applies morale: mandatory tests when squads activate, consolidation, Broken
+## Applies morale: mandatory tests when squads activate, regrouping, Broken
 ## rally tests, forced fall-back, and assault-loss tests. Rules come from
 ## MoraleRules; state changes go to SquadState, removals through BattleState,
 ## and activations end through the ActivationController. Has no input or
@@ -13,14 +13,14 @@ class_name MoraleController
 ##     pass clears Broken and allows half movement; a fail falls back its full
 ##     Movement and ends the activation. Either way it may not shoot or initiate
 ##     an assault for the rest of the turn.
-##   - A Shaken squad may consolidate during its Movement activation: Shaken
+##   - A Shaken squad may regroup during its Movement activation: Shaken
 ##     clears, movement is capped at half, and it may not shoot or initiate an
 ##     assault for the rest of the turn.
 
 signal morale_tested(result: MoraleResult)
-signal consolidated(state: SquadState)
+signal regrouped(state: SquadState)
 
-enum ConsolidateResult { OK, NO_SQUAD, NOT_ACTIVATED, WRONG_PHASE, NOT_SHAKEN }
+enum RegroupResult { OK, NO_SQUAD, NOT_ACTIVATED, WRONG_PHASE, NOT_SHAKEN }
 
 var dice := DiceRoller.new()
 ## Battlefield size in board units, for fall-back.
@@ -43,37 +43,38 @@ func bind(battle: BattleState, turn_manager: TurnManager, activation: Activation
     activation.squad_activated.connect(_on_squad_activated)
 
 
-## Whether `state` may consolidate now. Changes nothing.
-func can_consolidate(state: SquadState) -> ConsolidateResult:
+## Whether `state` may regroup now. Changes nothing.
+func can_regroup(state: SquadState) -> RegroupResult:
     if state == null:
-        return ConsolidateResult.NO_SQUAD
+        return RegroupResult.NO_SQUAD
     if not _activation.is_active_squad(state):
-        return ConsolidateResult.NOT_ACTIVATED
+        return RegroupResult.NOT_ACTIVATED
     if _turn_manager.current_phase != TurnManager.Phase.MOVEMENT:
-        return ConsolidateResult.WRONG_PHASE
+        return RegroupResult.WRONG_PHASE
     if state.morale_status != SquadState.MoraleStatus.SHAKEN:
-        return ConsolidateResult.NOT_SHAKEN
-    return ConsolidateResult.OK
+        return RegroupResult.NOT_SHAKEN
+    return RegroupResult.OK
 
 
-## The active Shaken squad consolidates: Shaken clears, movement is capped at
-## half its normal Movement, and it may not shoot or initiate an assault for the
+## The active Shaken squad regroups: Shaken clears, movement is capped at
+## half its normal Movement, and it may not shoot or charge for the
 ## rest of the turn. The activation stays open for the move.
-func consolidate(state: SquadState) -> ConsolidateResult:
-    var result := can_consolidate(state)
-    if result != ConsolidateResult.OK:
+func regroup(state: SquadState) -> RegroupResult:
+    var result := can_regroup(state)
+    if result != RegroupResult.OK:
         return result
     state.morale_status = SquadState.MoraleStatus.STEADY
     state.morale_restricted_this_turn = true
     state.limit_movement_allowance(MovementRules.allowance_for(state.data) * 0.5)
-    consolidated.emit(state)
+    regrouped.emit(state)
     return result
 
 
-## The losing squad of an assault tests; on a failure it becomes Broken and
-## falls back. Combat scoring that picks the loser is not implemented yet.
+## A squad on the losing side of an engagement tests (EngagementController
+## calls this for each, after CombatScoring); on a failure it becomes Broken and
+## falls back.
 ## A squad broken mid-turn first tries to rally at its first activation of the
-## next turn, and may not shoot or initiate an assault for the rest of this one.
+## next turn, and may not shoot or charge for the rest of this one.
 func resolve_assault_loss(state: SquadState) -> MoraleResult:
     var result := _test(state, MoraleResult.Kind.ASSAULT_LOSS)
     if not result.passed:

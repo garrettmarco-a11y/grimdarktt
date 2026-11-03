@@ -15,6 +15,8 @@ func bind(allocator: CasualtyAllocator) -> void:
     _allocator = allocator
     allocator.allocation_required.connect(func(_result, _left): refresh())
     allocator.resolved.connect(func(_result): refresh())
+    allocator.strike_allocated.connect(func(_result): refresh())
+    allocator.queue_resolved.connect(func(_results): refresh())
     refresh()
 
 
@@ -28,8 +30,11 @@ func refresh() -> void:
         return
     var target := result.target_squad
     var left := _allocator.get_wounds_left()
-    title_label.text = "Player %d: allocate %d wound%s to %s" % [target.get_player(), left,
+    title_label.text = "Player %d: allocate %d wound%s to %s" % [result.get_allocating_player(), left,
         "" if left == 1 else "s", target.data.display_name]
+    if result.strike_count > 0:
+        # Queued simultaneous strikes: say which strike these wounds come from.
+        title_label.text += "\nfrom %s" % result.describe_strike()
     for model in target.get_living_models():
         var button := Button.new()
         button.text = "%s (%d W)" % [model.get_model_name(), model.wounds_remaining]
