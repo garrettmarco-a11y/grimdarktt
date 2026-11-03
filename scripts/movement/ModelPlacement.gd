@@ -28,10 +28,11 @@ static func path_hits_base(from: Vector2, to: Vector2, radius: float, other: Vec
     return TerrainGeometry.distance_to_segment(other, from, to) < radius + other_radius - EPSILON
 
 
-## True if the whole base lies on a board of `board_size` (edges may touch).
-static func base_on_board(center: Vector2, radius: float, board_size: Vector2) -> bool:
-    return center.x >= radius - EPSILON and center.y >= radius - EPSILON \
-        and center.x <= board_size.x - radius + EPSILON and center.y <= board_size.y - radius + EPSILON
+## True if the whole base lies on a board of `board_size` (edges may touch,
+## within `tolerance`).
+static func base_on_board(center: Vector2, radius: float, board_size: Vector2, tolerance := EPSILON) -> bool:
+    return center.x >= radius - tolerance and center.y >= radius - tolerance \
+        and center.x <= board_size.x - radius + tolerance and center.y <= board_size.y - radius + tolerance
 
 
 ## Every pair of living models whose bases overlap, across `squads`, as

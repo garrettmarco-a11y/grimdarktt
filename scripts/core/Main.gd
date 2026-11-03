@@ -58,6 +58,7 @@ func _ready() -> void:
     assault.bind(turn_manager, activation, battle, casualties)
     assault.terrain = terrain
     morale.bind(battle, turn_manager, activation, game_board.board_size)
+    morale.terrain = terrain
     hud.bind_turn_manager(turn_manager)
     hud.bind_terrain(terrain)
     hud.bind_selection(selection)

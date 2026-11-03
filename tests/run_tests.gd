@@ -1556,7 +1556,10 @@ func test_leader_succession_keeps_positions_and_movement() -> void:
         [["Leader", null, Vector2.ZERO], ["Second", null, Vector2(2.0, 0.0)], ["Third", null, Vector2(0.0, 3.0)]])
     _check_eq(state.get_leader().get_model_name(), "Leader", "first model leads")
     state.begin_turn_movement(6.0)
-    state.apply_move(Vector2(13.0, 14.0), false)
+    var moves := {}
+    for model in state.get_living_models():
+        moves[model.model_id] = [model.position + Vector2(3.0, 4.0), 5.0]
+    state.apply_model_moves(moves, false)
     var second_world := state.get_model_position(state.get_model(1))
     var third_world := state.get_model_position(state.get_model(2))
     var moved := state.distance_moved
@@ -2672,10 +2675,12 @@ func test_fallback_off_battlefield_removes_squad() -> void:
     _check_eq(f.activation.active_squad, null, "activation ended by the removal")
     _check_eq(f.activation.get_active_player(), P2, "play passes on normally")
     _check_eq(f.tm.get_remaining_activations(P1), 1, "spent activation, not a second removal")
-    # A fall-back that ends exactly on the edge stays on the battlefield.
+    # A fall-back that ends exactly on the edge stays on the battlefield, its
+    # whole base still on the board.
     edge.morale_status = SquadState.MoraleStatus.BROKEN
     f.activation.activate(edge)
-    _check_eq(edge.board_position, Vector2(0.0, 16.0), "6 to the west edge exactly")
+    _check(edge.board_position.distance_to(Vector2(0.5, 16.0)) < 0.0001,
+        "6 towards the west edge: the base stops touching it: %s" % edge.board_position)
     _check(f.battle.get_squad(&"p2_x") != null, "still on the battlefield")
     _free_morale_fixture(f)
 
@@ -3295,20 +3300,61 @@ func test_multiple_orders_pay_the_path_travelled() -> void:
     _free_fixture(f)
 
 
-func test_fallback_ignores_terrain() -> void:
+func test_fallback_ignores_difficult_terrain_but_not_impassable() -> void:
     var broken := _squad(&"p1_b", P1, Vector2(10.0, 12.0), 1)
     var enemy := _squad(&"p2_e", P2, Vector2(40.0, 16.0), 1)
     var f := _morale_fixture([broken, enemy], [6, 6])
-    var terrain := _terrain([
+    f.morale.terrain = _terrain([_piece(_rect_poly(5.0, 0.0, 9.0, 30.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true)])
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    f.activation.activate(broken)
+    _check_eq(broken.board_position, Vector2(4.0, 12.0), "full 6 west through difficult terrain, unslowed")
+    _free_morale_fixture(f)
+    var walled := _squad(&"p1_w", P1, Vector2(10.0, 12.0), 1)
+    var other := _squad(&"p2_o", P2, Vector2(40.0, 16.0), 1)
+    var g := _morale_fixture([walled, other], [6, 6])
+    g.morale.terrain = _terrain([
         _piece(_rect_poly(5.0, 0.0, 9.0, 30.0), PackedVector2Array(), TerrainPiece.Cover.NONE, true),
         _piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, _rect_poly(6.0, 0.0, 6.5, 30.0)),
     ])
-    f.movement.terrain = terrain
+    walled.morale_status = SquadState.MoraleStatus.BROKEN
+    g.activation.activate(walled)
+    _check(walled.board_position.distance_to(Vector2(7.0, 12.0)) < 0.001,
+        "an impassable wall stops the fall-back with the base in contact: %s" % walled.board_position)
+    _check(g.battle.get_squad(&"p1_w") != null, "the squad stays on the battlefield")
+    _check(walled.movement_complete, "its movement is complete")
+    _free_morale_fixture(g)
+
+
+func test_fallback_respects_models_and_board_edge() -> void:
+    var broken := _squad_at(&"p1_b", P1, [Vector2(8.0, 12.0), Vector2(3.0, 15.0), Vector2(10.0, 12.0)])
+    var enemy := _squad_at(&"p2_e", P2, [Vector2(5.0, 12.0)])
+    var f := _morale_fixture([broken, enemy], [6, 6])
     broken.morale_status = SquadState.MoraleStatus.BROKEN
     f.activation.activate(broken)
-    _check_eq(broken.board_position, Vector2(4.0, 12.0),
-        "full 6 west, through difficult terrain and an impassable wall")
+    var leader := broken.get_model(0)
+    var ahead := broken.get_model(1)
+    var behind := broken.get_model(2)
+    _check(f.battle.get_squad(&"p1_b") != null, "an enemy blocks the leader's way off: the squad is not removed")
+    _check(leader.position.distance_to(Vector2(6.0, 12.0)) < 0.001, "the leader stops in contact with the enemy: %s" % leader.position)
+    _check(ahead.position.distance_to(Vector2(0.5, 15.0)) < 0.001, "a model reaching the edge first stops at it: %s" % ahead.position)
+    _check(behind.position.distance_to(Vector2(7.0, 12.0)) < 0.001, "the model behind stops in contact with its leader: %s" % behind.position)
+    _check(_no_overlaps([broken, enemy]), "fall-back never overlaps bases")
     _free_morale_fixture(f)
+    var runner := _squad_at(&"p1_r", P1, [Vector2(4.0, 12.0), Vector2(1.0, 15.0)])
+    var far := _squad_at(&"p2_f", P2, [Vector2(40.0, 16.0)])
+    var g := _morale_fixture([runner, far], [6, 6])
+    runner.morale_status = SquadState.MoraleStatus.BROKEN
+    g.activation.activate(runner)
+    _check(g.battle.get_squad(&"p1_r") == null, "a clear path off the edge for the leader removes the whole squad")
+    _free_morale_fixture(g)
+    var trapped := _squad_at(&"p1_t", P1, [Vector2(10.0, 12.0)])
+    var cage := _squad_at(&"p2_c", P2, [Vector2(9.0, 12.0), Vector2(11.0, 12.0), Vector2(10.0, 11.0), Vector2(10.0, 13.0)])
+    var h := _morale_fixture([trapped, cage], [6, 6])
+    trapped.morale_status = SquadState.MoraleStatus.BROKEN
+    h.activation.activate(trapped)
+    _check_eq(trapped.board_position, Vector2(10.0, 12.0), "a completely blocked model stays where it is")
+    _check(h.battle.get_squad(&"p1_t") != null and trapped.get_model_count() == 1, "with no further penalty")
+    _free_morale_fixture(h)
 
 
 func test_line_of_sight_geometry_rules() -> void:

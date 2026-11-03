@@ -25,6 +25,8 @@ enum ConsolidateResult { OK, NO_SQUAD, NOT_ACTIVATED, WRONG_PHASE, NOT_SHAKEN }
 var dice := DiceRoller.new()
 ## Battlefield size in board units, for fall-back.
 var board_size := Vector2.ZERO
+## Battlefield terrain: fall-back cannot cross impassable areas. None if null.
+var terrain: TerrainMap
 
 var _battle: BattleState
 var _turn_manager: TurnManager
@@ -123,20 +125,52 @@ func _rally(state: SquadState) -> void:
         _activation.end_activation()
 
 
-## Moves the squad's anchor its full normal Movement towards the nearest edge,
-## bypassing voluntary movement validation; off the battlefield it is removed.
+## Falls the squad back its full normal Movement towards the battlefield edge
+## nearest its leader, bypassing voluntary movement validation:
+##   - If the leader's straight path carries it off the battlefield and no
+##     other squad's model or impassable terrain stands in the way, the whole
+##     squad leaves the battlefield and is removed.
+##   - Otherwise every model moves the full distance in that direction (see
+##     SquadMover.plan_shift): difficult terrain costs nothing extra, but bases
+##     never overlap other models or impassable terrain. A model that reaches
+##     the board edge or an obstacle stops there; one that is fully blocked
+##     stays where it is, with no further penalty.
 func _fall_back(state: SquadState, result: MoraleResult) -> void:
     var distance := MovementRules.allowance_for(state.data)
+    var from := state.board_position
+    var edge := MoraleRules.nearest_edge(from, board_size)
+    var direction := MoraleRules.edge_direction(edge)
     result.fell_back = true
-    result.fallback_from = state.board_position
-    result.fallback_edge = MoraleRules.nearest_edge(state.board_position, board_size)
-    result.fallback_to = MoraleRules.fallback_destination(state.board_position, board_size, distance)
-    if MoraleRules.is_off_board(result.fallback_to, board_size):
+    result.fallback_from = from
+    result.fallback_edge = edge
+    result.fallback_to = from + direction * distance
+    if MoraleRules.is_off_board(result.fallback_to, board_size) and _leader_can_leave(state, direction, edge):
         result.removed = true
         state.remove_all_models()
         _battle.remove_squad(state.squad_id)
-    else:
-        state.apply_move(result.fallback_to, true)
+        return
+    var plan := SquadMover.plan_shift(state, direction, distance, _battle.get_squads(), terrain, board_size)
+    state.apply_model_moves(plan.moves, true)
+    result.fallback_to = state.board_position
+
+
+## True if the leader's base can travel straight from where it stands until
+## its centre crosses `edge`, meeting no other squad's model and no impassable
+## terrain. Its own squad moves the same way and does not block it.
+func _leader_can_leave(state: SquadState, direction: Vector2, edge: MoraleRules.Edge) -> bool:
+    var leader := state.get_leader()
+    var from := leader.position
+    var exit := from + direction * MoraleRules.edge_distance(from, board_size, edge)
+    var radius := leader.get_base_radius()
+    if terrain and terrain.base_crosses_impassable(from, exit, radius):
+        return false
+    for other in _battle.get_squads():
+        if other == state:
+            continue
+        for model in other.get_living_models():
+            if ModelPlacement.path_hits_base(from, exit, radius, model.position, model.get_base_radius()):
+                return false
+    return true
 
 
 func _test(state: SquadState, kind: MoraleResult.Kind) -> MoraleResult:

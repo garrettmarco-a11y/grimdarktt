@@ -213,7 +213,7 @@ static func _cost(from: Vector2, to: Vector2, terrain: TerrainMap, pay_terrain: 
 ## True if `mover`'s base can travel straight from `from` to `to`.
 static func _legal(mover: _Mover, from: Vector2, to: Vector2, movers: Array[_Mover], obstacles: Array,
         terrain: TerrainMap, board_size: Vector2) -> bool:
-    if not ModelPlacement.base_on_board(to, mover.radius, board_size):
+    if not ModelPlacement.base_on_board(to, mover.radius, board_size, CONTACT_SLACK):
         return false
     if terrain and terrain.base_crosses_impassable(from, to, mover.radius):
         return false

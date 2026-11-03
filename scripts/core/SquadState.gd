@@ -133,20 +133,6 @@ func place_formation(anchor: Vector2) -> void:
     position_changed.emit(self)
 
 
-## Moves the whole squad rigidly so its leader stands at `destination`, setting
-## each model's movement used to `cost` (the straight distance from the turn
-## start if negative). Interim rigid movement, replaced by apply_model_moves.
-func apply_move(destination: Vector2, complete: bool, cost := -1.0) -> void:
-    var used := cost if cost >= 0.0 else turn_start_position.distance_to(destination)
-    place_formation(destination)
-    for model in _models:
-        model.movement_used = used
-    _anchor = destination
-    _movement_used = used
-    movement_complete = complete
-    movement_changed.emit(self)
-
-
 ## Moves models individually. `moves` maps a living model's id to
 ## [new position, cost of the path it travelled]; each cost is added to that
 ## model's movement_used. `complete` records whether the squad may move again
