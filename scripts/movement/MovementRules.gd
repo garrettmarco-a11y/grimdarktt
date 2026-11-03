@@ -68,8 +68,9 @@ static func validate(state: SquadState, destination: Vector2, phase: TurnManager
 ## its anchor to `destination`; just the anchor's if it lists no models.
 static func model_paths(state: SquadState, destination: Vector2) -> Array:
     var paths := []
+    var anchor := state.board_position
     for model in state.get_living_models():
-        paths.append([state.turn_start_position + model.offset, destination + model.offset])
+        paths.append([model.turn_start_position, destination + model.position - anchor])
     if paths.is_empty():
         paths.append([state.turn_start_position, destination])
     return paths

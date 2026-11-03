@@ -1558,7 +1558,7 @@ func test_leader_succession_keeps_positions_and_movement() -> void:
     state.take_wound(0)
     _check_eq(state.get_leader(), state.get_model(1), "next surviving model promoted")
     _check_eq(state.board_position, second_world, "anchor moves to the new leader")
-    _check_eq(state.get_model(1).offset, Vector2.ZERO, "new leader sits on the anchor")
+    _check_eq(state.board_position, state.get_model(1).position, "the anchor is the new leader's own position")
     _check_eq(state.get_model_position(state.get_model(1)), second_world, "new leader has not moved")
     _check_eq(state.get_model_position(state.get_model(2)), third_world, "other survivor has not moved")
     _check(is_equal_approx(state.distance_moved, moved), "distance moved this turn unchanged")

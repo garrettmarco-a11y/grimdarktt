@@ -20,18 +20,36 @@ var definition: SquadModel:
         push_error("ModelState.definition is read-only")
 var wounds_remaining := 0
 var removed := false
-## Position relative to the squad's anchor (the current leader), in board units.
-var offset := Vector2.ZERO
+## Authoritative board position of the model's centre, in board units. Visual
+## tokens follow it; nothing reads positions back from them.
+var position := Vector2.ZERO
+## Where the model stood when the current turn's movement began.
+var turn_start_position := Vector2.ZERO
+## Movement allowance this model has spent this turn: the summed cost of every
+## path it has actually travelled (difficult terrain counted double).
+var movement_used := 0.0
 
 var _model_id: int
 var _definition: SquadModel
 
 
-func _init(id: int, model_definition: SquadModel, wounds: int, anchor_offset: Vector2) -> void:
+func _init(id: int, model_definition: SquadModel, wounds: int, start_position: Vector2) -> void:
     _model_id = id
     _definition = model_definition
     wounds_remaining = wounds
-    offset = anchor_offset
+    position = start_position
+    turn_start_position = start_position
+
+
+## Radius of the model's circular base, in board units.
+func get_base_radius() -> float:
+    return _definition.base_radius if _definition else SquadModel.DEFAULT_BASE_RADIUS
+
+
+## The model's formation slot: where it stands relative to the squad's other
+## slots, from its definition. Used only as a movement target.
+func get_formation_slot() -> Vector2:
+    return _definition.formation_offset if _definition else Vector2.ZERO
 
 
 func get_model_name() -> String:
