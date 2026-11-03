@@ -81,6 +81,8 @@ func _on_move_ordered(state: SquadState, _from: Vector2, _to: Vector2) -> void:
     if plan and not plan.fell_short.is_empty():
         order_feedback.text += "; %d model%s could not reach formation" % [plan.fell_short.size(),
             "" if plan.fell_short.size() == 1 else "s"]
+    if not CohesionRules.is_coherent(state):
+        order_feedback.text += "; %s" % CohesionRules.describe(state).to_lower()
 
 
 func _on_move_rejected(state: SquadState, destination: Vector2, result: MovementRules.Result) -> void:

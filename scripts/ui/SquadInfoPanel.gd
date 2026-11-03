@@ -21,6 +21,7 @@ const EMPTY_TEXT := "No unit selected"
 @onready var models_label: Label = %ModelsLabel
 @onready var status_label: Label = %StatusLabel
 @onready var cover_label: Label = %CoverLabel
+@onready var cohesion_label: Label = %CohesionLabel
 
 ## Battlefield terrain, for the cover line; none if null.
 var terrain: TerrainMap
@@ -49,6 +50,7 @@ func show_squad(state: SquadState) -> void:
         models_label.visible = false
         status_label.visible = false
         cover_label.visible = false
+        cohesion_label.visible = false
         return
     _shown = state
     state.movement_changed.connect(_update_movement)
@@ -81,6 +83,14 @@ func _update_cover(state: SquadState) -> void:
     cover_label.visible = true
 
 
+## Cohesion of the living models, recalculated whenever they move or one is
+## removed. Report only.
+func _update_cohesion(state: SquadState) -> void:
+    cohesion_label.text = CohesionRules.describe(state)
+    cohesion_label.modulate = Color.WHITE if CohesionRules.is_coherent(state) else Color(1.0, 0.6, 0.4)
+    cohesion_label.visible = true
+
+
 func _update_movement(state: SquadState) -> void:
     if state.movement_complete:
         movement_label.text = "Moved %.1f / %s (done)" % [state.movement_used, String.num(state.movement_allowance)]
@@ -88,10 +98,12 @@ func _update_movement(state: SquadState) -> void:
         movement_label.text = "Moved %.1f / %s" % [state.movement_used, String.num(state.movement_allowance)]
     movement_label.visible = true
     _update_cover(state)
+    _update_cohesion(state)
 
 
 func _update_models(state: SquadState) -> void:
     _update_cover(state)
+    _update_cohesion(state)
     var wounds_left := 0
     for model in state.get_living_models():
         wounds_left += model.wounds_remaining

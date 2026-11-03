@@ -3805,7 +3805,7 @@ func test_invalid_starting_layout_rejected_in_main() -> void:
         setup.start_position = position
         setups.append(setup)
     main.squad_setups = setups
-    print("        (the next error is expected)")
+    print("        (the next 2 errors are expected)")
     root.add_child(main)
     await process_frame
     _check(not main.layout_errors.is_empty(), "the overlapping layout is reported: %s" % [main.layout_errors])
@@ -4008,3 +4008,50 @@ func test_follower_cannot_reach_its_slot() -> void:
     _check(_no_overlaps([boxed, walls[0]]), "no overlaps")
     _free_fixture(f)
     _free_fixture(g)
+
+
+# --- Task 2.2: cohesion (report only) ---
+
+func test_cohesion_connected_chain() -> void:
+    var chain := _formation(&"p1_c", P1, [Vector2(10.0, 10.0), Vector2(12.0, 10.0), Vector2(14.0, 10.0), Vector2(16.0, 10.0)])
+    _check(CohesionRules.is_coherent(chain), "bases exactly 1.0 apart edge to edge form a chain")
+    _check(chain.get_model(3).position.distance_to(chain.board_position) > 3.0,
+        "the far end is 6 from the leader: a chain, not a distance from the leader")
+    var gap := _formation(&"p1_g", P1, [Vector2(10.0, 10.0), Vector2(12.01, 10.0), Vector2(14.01, 10.0)])
+    _check(not CohesionRules.is_coherent(gap), "a 1.01 gap breaks the chain")
+    _check_eq(CohesionRules.out_of_cohesion(gap), [gap.get_model(1), gap.get_model(2)], "the models cut off from the leader")
+    _check_eq(CohesionRules.describe(gap), "Out of cohesion: 2 models", "described")
+    _check(CohesionRules.is_coherent(_formation(&"p1_one", P1, [Vector2(5.0, 5.0)])), "a lone model is always in cohesion")
+    chain.take_wound(1)
+    _check(not CohesionRules.is_coherent(chain), "a casualty in the middle of the chain splits it")
+    _check_eq(CohesionRules.out_of_cohesion(chain), [chain.get_model(2), chain.get_model(3)], "the far side is out")
+    _check(ModelPlacement.find_overlaps([chain]).is_empty(), "out of cohesion is not overlap")
+
+
+func test_cohesion_violation_without_overlap_is_reported_not_fixed() -> void:
+    var wall := _rect_poly(12.0, 13.0, 13.0, 30.0)
+    var terrain := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, wall)])
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0), Vector2(10.0, 14.0)])
+    var f := _terrain_move_fixture([squad], terrain)
+    _check(CohesionRules.is_coherent(squad), "starts in cohesion")
+    _check_eq(f.movement.order_move(squad, Vector2(16.0, 10.0)), MovementRules.Result.OK, "the move is allowed")
+    var rear := squad.get_model(2)
+    _check(rear.position.distance_to(Vector2(11.5, 14.0)) < 0.001, "the rear model is stopped by the wall: %s" % rear.position)
+    _check(not CohesionRules.is_coherent(squad), "the squad is now out of cohesion")
+    _check(_no_overlaps([squad]), "but no bases overlap")
+    _check(rear.position.distance_to(Vector2(11.5, 14.0)) < 0.001, "nothing moved it to restore cohesion")
+    _free_fixture(f)
+
+
+func test_cohesion_shown_in_info_panel_and_feedback() -> void:
+    var main: Node = await _load_main()
+    var panel: SquadInfoPanel = main.hud.squad_info_panel
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    main.selection.select(line)
+    _check_eq(panel.cohesion_label.text, "Cohesion: OK", "the starting formation is in cohesion")
+    line.get_model(3).position += Vector2(0.0, -3.0)
+    line.position_changed.emit(line)
+    _check_eq(panel.cohesion_label.text, "Out of cohesion: 1 model", "the panel follows positions")
+    main.queue_free()
+    await process_frame
+

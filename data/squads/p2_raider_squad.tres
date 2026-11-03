@@ -29,14 +29,14 @@ script = ExtResource("3_model")
 model_name = "Raider"
 weapon = ExtResource("w_carbine")
 melee_weapon = ExtResource("m_combat_blade")
-formation_offset = Vector2(-1.5, -1.5)
+formation_offset = Vector2(-1.4, -1.4)
 
 [sub_resource type="Resource" id="Resource_model_2"]
 script = ExtResource("3_model")
 model_name = "Raider"
 weapon = ExtResource("w_carbine")
 melee_weapon = ExtResource("m_combat_blade")
-formation_offset = Vector2(1.5, -1.5)
+formation_offset = Vector2(1.4, -1.4)
 
 [resource]
 script = ExtResource("1_squad")
