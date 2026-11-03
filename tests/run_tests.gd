@@ -2993,10 +2993,10 @@ func test_footprint_overlap_tolerance_after_rotation() -> void:
     _check(placed.is_valid(), "a flush rotated pair is a valid terrain configuration")
     _check_eq(placed.get_placed().size(), 2, "... and both pieces are placed")
     var square_a := _rect_poly(0.0, 0.0, 4.0, 4.0)
-    _check(not TerrainGeometry.polygons_overlap(square_a, _rect_poly(3.9995, 0.0, 8.0, 4.0)),
-        "an overlap within the 0.001 boundary tolerance counts as touching")
-    _check(TerrainGeometry.polygons_overlap(square_a, _rect_poly(3.998, 0.0, 8.0, 4.0)),
-        "an overlap deeper than the boundary tolerance is rejected")
+    _check(not TerrainGeometry.polygons_overlap(square_a, _rect_poly(3.99999, 0.0, 8.0, 4.0)),
+        "an overlap at float-rounding depth counts as touching")
+    _check(TerrainGeometry.polygons_overlap(square_a, _rect_poly(3.9995, 0.0, 8.0, 4.0)),
+        "an overlap shallower than the 0.001 boundary tolerance is still an overlap")
     var l_shape := PackedVector2Array([Vector2(0, 0), Vector2(4, 0), Vector2(4, 1), Vector2(1, 1), Vector2(1, 4), Vector2(0, 4)])
     _check(not TerrainGeometry.polygons_overlap(l_shape, _rect_poly(1.0, 1.0, 4.0, 4.0)), "concave: a square filling the notch touches")
     _check(TerrainGeometry.polygons_overlap(l_shape, _rect_poly(0.9, 1.0, 4.0, 4.0)), "concave: a square pushed into the arm overlaps")
@@ -3008,6 +3008,32 @@ func test_footprint_overlap_tolerance_after_rotation() -> void:
     _check(TerrainGeometry.polygons_overlap(_rect_poly(0.0, 0.0, 10.0, 10.0), strip)
         and TerrainGeometry.polygons_overlap(strip, _rect_poly(0.0, 0.0, 10.0, 10.0)),
         "a strip too narrow to survive shrinking is still caught inside a larger footprint")
+
+func test_narrow_footprint_overlap() -> void:
+    var cross_rejected := []
+    var touch_accepted := []
+    for width in [0.0015, 0.0005, 0.0002]:
+        for degrees in [0.0, 33.0, 71.0]:
+            var centre := Vector2(20.3, 15.7)
+            var along := TerrainGeometry.transform_polygon(_rect_poly(-2.0, -width / 2.0, 2.0, width / 2.0), centre, deg_to_rad(degrees))
+            var across := TerrainGeometry.transform_polygon(_rect_poly(-width / 2.0, -2.0, width / 2.0, 2.0), centre, deg_to_rad(degrees + 40.0))
+            var beside := TerrainGeometry.transform_polygon(_rect_poly(-2.0, width / 2.0, 2.0, width * 1.5), centre, deg_to_rad(degrees))
+            var end_on := TerrainGeometry.transform_polygon(_rect_poly(2.0, -width / 2.0, 6.0, width / 2.0), centre, deg_to_rad(degrees))
+            cross_rejected.append(TerrainGeometry.polygons_overlap(along, across) and TerrainGeometry.polygons_overlap(across, along))
+            touch_accepted.append(not TerrainGeometry.polygons_overlap(along, beside) and not TerrainGeometry.polygons_overlap(along, end_on))
+    _check(not cross_rejected.has(false), "two narrow footprints crossing are rejected at every width and angle: %s" % [cross_rejected])
+    _check(not touch_accepted.has(false), "narrow footprints side by side or end to end only touch: %s" % [touch_accepted])
+    var wide := _rect_poly(0.0, 0.0, 4.0, 4.0)
+    _check(TerrainGeometry.polygons_overlap(wide, _rect_poly(-1.0, 2.0, 5.0, 2.0005)), "a narrow footprint crossing a wide one is rejected")
+    _check(TerrainGeometry.polygons_overlap(_rect_poly(1.0, 2.0, 3.0, 2.0005), wide)
+        and TerrainGeometry.polygons_overlap(wide, _rect_poly(1.0, 2.0, 3.0, 2.0005)),
+        "a narrow footprint inside a wide one is rejected")
+    _check(not TerrainGeometry.polygons_overlap(wide, _rect_poly(4.0, 1.0, 6.0, 1.0005)), "a narrow footprint touching a wide one is accepted")
+    _check(not TerrainGeometry.polygons_overlap(_rect_poly(-1.0, 4.0, 5.0, 4.0005), wide), "a narrow footprint along a wide one's edge is accepted")
+    print("        (the next error is expected)")
+    var crossing := TerrainMap.new(_setups([_piece(_rect_poly(-2.0, -0.0005, 2.0, 0.0005)), _piece(_rect_poly(-2.0, -0.0005, 2.0, 0.0005))],
+        [Vector2(20.0, 15.0), Vector2(20.0, 15.0)], [0.0, 90.0]))
+    _check(not crossing.is_valid() and crossing.get_placed().is_empty(), "a configuration with crossing narrow footprints is rejected whole")
 
 func test_footprint_membership_per_model() -> void:
     var terrain := _terrain([_piece(_rect_poly(0.0, 0.0, 10.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT)])

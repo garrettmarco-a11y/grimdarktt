@@ -3,12 +3,19 @@ class_name TerrainGeometry
 ## Polygon geometry for terrain, in board units: point membership, the parts of
 ## a segment inside a polygon, and placement transforms. Pure functions.
 ##
-## Boundary behaviour (one tolerance, EPSILON, throughout):
+## Boundary behaviour (one tolerance, EPSILON, throughout; footprint overlap
+## uses OVERLAP_NOISE instead, see polygons_overlap):
 ##   - A point on a polygon's edge or vertex counts as inside it.
 ##   - Only the polygon's interior obstructs or slows: a segment that merely
 ##     touches a vertex or runs exactly along an edge is not inside it.
 
 const EPSILON := 0.001
+## Footprint overlap only: the largest rounding error expected where two
+## placed polygons meet. Board coordinates are float32, and on a 48 x 32 board
+## pieces rotated to touch exactly produce slivers at most ~0.000013 thick.
+## This is a numerical allowance, not a rules tolerance: overlap deeper than
+## twice this value, in any direction, is a real overlap.
+const OVERLAP_NOISE := 0.00005
 
 
 static func distance_to_segment(point: Vector2, a: Vector2, b: Vector2) -> float:
@@ -115,27 +122,27 @@ static func polygon_area(polygon: PackedVector2Array) -> float:
     return absf(twice) * 0.5
 
 
-## True if the two polygons share interior area deeper than the boundary
-## tolerance. Each polygon is shrunk inward by EPSILON and intersected with the
-## other at full size; any shared area (above EPSILON squared, to discard
-## degenerate clipper output) in either direction is an overlap. Touching along
-## an edge or at a vertex, including the float error of rotated placements, is
-## not an overlap; containment and identical polygons are. Checking both
-## directions keeps a narrow polygon (which shrinks to nothing) contained in a
-## larger one an overlap.
+## True if the two polygons share interior area. Both polygons are shrunk
+## inward by OVERLAP_NOISE and the shrunk polygons intersected: any shared area
+## left is an overlap. This is the same as asking whether the shared region
+## contains a disc of radius OVERLAP_NOISE, so float-rounding slivers along
+## flush edges and at touching vertices are ignored at any rotation, while
+## real overlaps are rejected however narrow the polygons are, down to
+## 2 * OVERLAP_NOISE, below which overlap cannot be told apart from rounding.
+## The shrinking is done on the input polygons, which are well formed; the
+## rounding slivers themselves are degenerate and cannot be shrunk reliably.
+## The boundary tolerance EPSILON plays no part.
+## Containment and identical polygons are overlaps; winding does not matter.
 static func polygons_overlap(a: PackedVector2Array, b: PackedVector2Array) -> bool:
     if a.size() < 3 or b.size() < 3:
         return false
-    return _shrunk_shares_area(a, b) or _shrunk_shares_area(b, a)
-
-
-## True if `shrink` offset inward by EPSILON shares area with `other`.
-static func _shrunk_shares_area(shrink: PackedVector2Array, other: PackedVector2Array) -> bool:
-    var shared := 0.0
-    for inner in Geometry2D.offset_polygon(shrink, -EPSILON, Geometry2D.JOIN_MITER):
-        for piece in Geometry2D.intersect_polygons(inner, other):
-            shared += polygon_area(piece)
-    return shared > EPSILON * EPSILON
+    var shrunk_b := Geometry2D.offset_polygon(b, -OVERLAP_NOISE, Geometry2D.JOIN_MITER)
+    for inner_a in Geometry2D.offset_polygon(a, -OVERLAP_NOISE, Geometry2D.JOIN_MITER):
+        for inner_b in shrunk_b:
+            for piece in Geometry2D.intersect_polygons(inner_a, inner_b):
+                if polygon_area(piece) > 0.0:
+                    return true
+    return false
 
 
 static func total_length(intervals: Array[Vector2]) -> float:
