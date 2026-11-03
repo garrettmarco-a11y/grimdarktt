@@ -84,16 +84,24 @@ static func merge_intervals(intervals: Array[Vector2]) -> Array[Vector2]:
     return merged
 
 
-## True if the polygon's interior lies across segment a->b somewhere other
-## than a stretch that begins at `a` or ends at `b` (the endpoint's own terrain).
+## True if the polygon's interior lies across segment a->b, ignoring only the
+## stretch at an endpoint that is strictly inside the polygon (a model standing
+## within a blocker sees out of it and can be seen in it). An endpoint on the
+## boundary, or outside within EPSILON of it, gets no exemption: touching a
+## blocker from outside does not let a model see through it.
 static func blocks_between(a: Vector2, b: Vector2, polygon: PackedVector2Array) -> bool:
     var length := a.distance_to(b)
     if length <= EPSILON:
         return false
     var tolerance := EPSILON / length
+    var a_inside := is_strictly_inside(polygon, a)
+    var b_inside := is_strictly_inside(polygon, b)
     for interval in interior_intervals(a, b, polygon):
-        if interval.x > tolerance and interval.y < 1.0 - tolerance:
-            return true
+        if a_inside and interval.x <= tolerance:
+            continue
+        if b_inside and interval.y >= 1.0 - tolerance:
+            continue
+        return true
     return false
 
 
@@ -107,15 +115,26 @@ static func polygon_area(polygon: PackedVector2Array) -> float:
     return absf(twice) * 0.5
 
 
-## True if the two polygons share interior area (more than EPSILON squared).
-## Touching along an edge or at a vertex is not an overlap; containment and
-## identical polygons are.
+## True if the two polygons share interior area deeper than the boundary
+## tolerance. Each polygon is shrunk inward by EPSILON and intersected with the
+## other at full size; any shared area (above EPSILON squared, to discard
+## degenerate clipper output) in either direction is an overlap. Touching along
+## an edge or at a vertex, including the float error of rotated placements, is
+## not an overlap; containment and identical polygons are. Checking both
+## directions keeps a narrow polygon (which shrinks to nothing) contained in a
+## larger one an overlap.
 static func polygons_overlap(a: PackedVector2Array, b: PackedVector2Array) -> bool:
     if a.size() < 3 or b.size() < 3:
         return false
+    return _shrunk_shares_area(a, b) or _shrunk_shares_area(b, a)
+
+
+## True if `shrink` offset inward by EPSILON shares area with `other`.
+static func _shrunk_shares_area(shrink: PackedVector2Array, other: PackedVector2Array) -> bool:
     var shared := 0.0
-    for piece in Geometry2D.intersect_polygons(a, b):
-        shared += polygon_area(piece)
+    for inner in Geometry2D.offset_polygon(shrink, -EPSILON, Geometry2D.JOIN_MITER):
+        for piece in Geometry2D.intersect_polygons(inner, other):
+            shared += polygon_area(piece)
     return shared > EPSILON * EPSILON
 
 

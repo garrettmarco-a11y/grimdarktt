@@ -2963,6 +2963,52 @@ func test_footprint_overlap_validation() -> void:
     _check(incremental.add(_piece(_rect_poly(4.0, 0.0, 6.0, 4.0))), "add() accepts a touching piece")
 
 
+func test_footprint_overlap_tolerance_after_rotation() -> void:
+    var square := _rect_poly(-2.0, -2.0, 2.0, 2.0)
+    var flush_rejected := 0
+    var vertex_rejected := 0
+    var overlap_missed := 0
+    var cases := 0
+    for i in 72:
+        var degrees := float(i) * 5.0 + 0.37
+        var rotation := deg_to_rad(degrees)
+        for origin in [Vector2(20.0, 15.0), Vector2(3.7, 28.1), Vector2(41.3, 2.9)]:
+            cases += 1
+            var a := TerrainGeometry.transform_polygon(square, origin, rotation)
+            var flush := TerrainGeometry.transform_polygon(square, origin + Vector2(4.0, 1.3).rotated(rotation), rotation)
+            var corner := TerrainGeometry.transform_polygon(square, origin + Vector2(4.0, 4.0).rotated(rotation), rotation)
+            var edge_overlap := TerrainGeometry.transform_polygon(square, origin + Vector2(3.99, 1.3).rotated(rotation), rotation)
+            var corner_overlap := TerrainGeometry.transform_polygon(square, origin + Vector2(3.99, 3.99).rotated(rotation), rotation)
+            if TerrainGeometry.polygons_overlap(a, flush) or TerrainGeometry.polygons_overlap(flush, a):
+                flush_rejected += 1
+            if TerrainGeometry.polygons_overlap(a, corner) or TerrainGeometry.polygons_overlap(corner, a):
+                vertex_rejected += 1
+            if not TerrainGeometry.polygons_overlap(a, edge_overlap) or not TerrainGeometry.polygons_overlap(corner_overlap, a):
+                overlap_missed += 1
+    _check_eq(flush_rejected, 0, "rotated footprints placed flush are never rejected (%d placements)" % cases)
+    _check_eq(vertex_rejected, 0, "rotated footprints touching at a vertex are never rejected")
+    _check_eq(overlap_missed, 0, "a rotated 0.01 overlap, along an edge or at a corner, is always rejected")
+    var placed := TerrainMap.new(_setups([_piece(square), _piece(square)],
+        [Vector2(20.0, 15.0), Vector2(20.0, 15.0) + Vector2(4.0, 0.0).rotated(deg_to_rad(37.0))], [37.0, 37.0]))
+    _check(placed.is_valid(), "a flush rotated pair is a valid terrain configuration")
+    _check_eq(placed.get_placed().size(), 2, "... and both pieces are placed")
+    var square_a := _rect_poly(0.0, 0.0, 4.0, 4.0)
+    _check(not TerrainGeometry.polygons_overlap(square_a, _rect_poly(3.9995, 0.0, 8.0, 4.0)),
+        "an overlap within the 0.001 boundary tolerance counts as touching")
+    _check(TerrainGeometry.polygons_overlap(square_a, _rect_poly(3.998, 0.0, 8.0, 4.0)),
+        "an overlap deeper than the boundary tolerance is rejected")
+    var l_shape := PackedVector2Array([Vector2(0, 0), Vector2(4, 0), Vector2(4, 1), Vector2(1, 1), Vector2(1, 4), Vector2(0, 4)])
+    _check(not TerrainGeometry.polygons_overlap(l_shape, _rect_poly(1.0, 1.0, 4.0, 4.0)), "concave: a square filling the notch touches")
+    _check(TerrainGeometry.polygons_overlap(l_shape, _rect_poly(0.9, 1.0, 4.0, 4.0)), "concave: a square pushed into the arm overlaps")
+    var u_shape := PackedVector2Array([Vector2(0, 0), Vector2(10, 0), Vector2(10, 6), Vector2(8, 6), Vector2(8, 2),
+        Vector2(2, 2), Vector2(2, 6), Vector2(0, 6)])
+    _check(TerrainGeometry.polygons_overlap(u_shape, _rect_poly(-1.0, 4.0, 11.0, 5.0)), "concave: a bar across both arms of a U overlaps")
+    _check(not TerrainGeometry.polygons_overlap(u_shape, _rect_poly(2.0, 2.0, 8.0, 6.0)), "concave: a block filling the U's gap touches")
+    var strip := _rect_poly(2.0, 5.0, 8.0, 5.0015)
+    _check(TerrainGeometry.polygons_overlap(_rect_poly(0.0, 0.0, 10.0, 10.0), strip)
+        and TerrainGeometry.polygons_overlap(strip, _rect_poly(0.0, 0.0, 10.0, 10.0)),
+        "a strip too narrow to survive shrinking is still caught inside a larger footprint")
+
 func test_footprint_membership_per_model() -> void:
     var terrain := _terrain([_piece(_rect_poly(0.0, 0.0, 10.0, 10.0), PackedVector2Array(), TerrainPiece.Cover.LIGHT)])
     var squad := _squad_at(&"s", P1, [Vector2(8.0, 5.0), Vector2(11.0, 5.0), Vector2(9.0, 6.0)])
@@ -3245,6 +3291,32 @@ func test_line_of_sight_geometry_rules() -> void:
         "inside one arm of a U, the other arm still blocks")
     _check(concave.has_line_of_sight(Vector2(1.0, 4.0), Vector2(5.0, 4.0)), "inside one arm, seeing into the gap")
 
+
+func test_line_of_sight_blocker_boundary_endpoints() -> void:
+    var los := LineOfSight.new(_terrain([_piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 11.0, 10.0))]))
+    _check(not los.has_line_of_sight(Vector2(9.0, 5.0), Vector2(20.0, 5.0)), "shooter clear of the wall: blocked")
+    _check(not los.has_line_of_sight(Vector2(10.0, 5.0), Vector2(20.0, 5.0)), "shooter exactly on the near boundary: blocked")
+    _check(not los.has_line_of_sight(Vector2(9.9995, 5.0), Vector2(20.0, 5.0)), "shooter 0.0005 outside the boundary: blocked")
+    _check(not los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(11.0, 5.0)), "target exactly on the far boundary: hidden")
+    _check(not los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(11.0005, 5.0)), "target hugging the far side: hidden")
+    _check(not los.has_line_of_sight(Vector2(10.0, 5.0), Vector2(11.0, 5.0)), "models on opposite faces: hidden")
+    _check(los.has_line_of_sight(Vector2(10.5, 5.0), Vector2(20.0, 5.0)), "shooter strictly inside sees out")
+    _check(los.has_line_of_sight(Vector2(0.0, 5.0), Vector2(10.5, 5.0)), "target strictly inside can be seen")
+    _check(los.has_line_of_sight(Vector2(10.5, 2.0), Vector2(10.5, 8.0)), "both strictly inside the same blocker")
+    _check(los.has_line_of_sight(Vector2(10.0, 12.0), Vector2(10.0, 20.0)), "on the boundary, looking away from the wall")
+    var nested := LineOfSight.new(_terrain([
+        _piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 20.0, 10.0)),
+        _piece(PackedVector2Array(), _rect_poly(14.0, 0.0, 15.0, 10.0)),
+    ]))
+    _check(nested.has_line_of_sight(Vector2(11.0, 5.0), Vector2(13.0, 5.0)), "both inside the same blocker, nothing between")
+    _check(not nested.has_line_of_sight(Vector2(11.0, 5.0), Vector2(18.0, 5.0)),
+        "both inside the same blocker, a second blocker between them still blocks")
+    var walls := LineOfSight.new(_terrain([
+        _piece(PackedVector2Array(), _rect_poly(10.0, 0.0, 11.0, 10.0)),
+        _piece(PackedVector2Array(), _rect_poly(14.0, 0.0, 15.0, 10.0)),
+    ]))
+    _check(not walls.has_line_of_sight(Vector2(10.5, 5.0), Vector2(20.0, 5.0)),
+        "inside one wall, a separate second wall still blocks")
 
 func test_partially_visible_target_squad() -> void:
     var los := LineOfSight.new(_terrain([_piece(PackedVector2Array(), _rect_poly(14.0, 0.0, 16.0, 6.0))]))
