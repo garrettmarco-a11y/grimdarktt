@@ -4153,3 +4153,97 @@ func test_repeated_movement_toward_contact() -> void:
     _check(closest >= 1.0, "pushing a follower into an enemy over 12 legs never goes inside exact contact: %.7f" % closest)
     _check(closest < 1.0001, "it does reach contact")
     _free_fixture(f)
+
+
+# --- Task 2.2 follow-up: deterministic ordering ---
+
+## Two equivalent battles: the second stores its models and squads in reverse.
+func _mirrored_battles(points: Array, enemy_points: Array) -> Array:
+    var result := []
+    for reverse in [false, true]:
+        var squad := _formation(&"p1_s", P1, points)
+        var enemy := _formation(&"p2_e", P2, enemy_points)
+        if reverse:
+            squad._models.reverse()
+            enemy._models.reverse()
+            result.append(_terrain_move_fixture([enemy, squad]))
+        else:
+            result.append(_terrain_move_fixture([squad, enemy]))
+    return result
+
+
+func _model_results(squad: SquadState) -> Array:
+    return squad.get_living_models().map(func(m): return [m.model_id, m.position, m.movement_used])
+
+
+func test_movement_independent_of_storage_order() -> void:
+    var points := [Vector2(10.0, 10.0), Vector2(9.0, 11.0), Vector2(11.0, 11.0), Vector2(10.0, 12.0), Vector2(12.0, 11.0)]
+    var enemy_points := [Vector2(15.0, 12.6), Vector2(16.0, 10.0)]
+    var battles := _mirrored_battles(points, enemy_points)
+    var squads := battles.map(func(f): return f.battle.get_squad(&"p1_s"))
+    _check_eq(squads[0].get_leader().model_id, squads[1].get_leader().model_id, "the leader does not depend on storage order")
+    _check_eq(squads[1].get_models().map(func(m): return m.model_id), [0, 1, 2, 3, 4], "models are reported in id order")
+    for destination in [Vector2(14.0, 10.0), Vector2(14.0, 7.0), Vector2(12.0, 6.5)]:
+        for i in 2:
+            battles[i].movement.order_move(squads[i], destination)
+        _check_eq(_model_results(squads[0]), _model_results(squads[1]),
+            "same positions and costs whatever order models and squads are stored in (to %s)" % destination)
+    for f in battles:
+        _check(_no_overlaps(f.battle.get_squads()), "no overlaps")
+        _free_fixture(f)
+
+
+func test_repeated_command_gives_identical_result() -> void:
+    var results := []
+    for run in 3:
+        var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(9.0, 11.0), Vector2(11.0, 11.0), Vector2(10.0, 12.0)])
+        var post := _formation(&"p2_p", P2, [Vector2(13.0, 11.4)])
+        var f := _terrain_move_fixture([squad, post])
+        f.movement.order_move(squad, Vector2(15.0, 9.0))
+        results.append(_model_results(squad))
+        _free_fixture(f)
+    _check(results[0] == results[1] and results[1] == results[2], "the same command three times: identical positions and costs")
+
+
+func test_tied_models_ordered_by_id() -> void:
+    # Three models abreast, perpendicular to travel: equal projections.
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 11.0), Vector2(10.0, 9.0)])
+    var gap_post := _formation(&"p2_p", P2, [Vector2(12.5, 10.5)])
+    var battles := []
+    for reverse in [false, true]:
+        var s := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 11.0), Vector2(10.0, 9.0)])
+        var p := _formation(&"p2_p", P2, [Vector2(12.5, 10.5)])
+        if reverse:
+            s._models.reverse()
+        var f := _terrain_move_fixture([s, p])
+        f.movement.order_move(s, Vector2(10.0, 13.0))
+        battles.append([f, s])
+    _check_eq(_model_results(battles[0][1]), _model_results(battles[1][1]), "ties in travel order resolve the same way")
+    for b in battles:
+        _check(_no_overlaps(b[0].battle.get_squads()), "no overlaps")
+        _free_fixture(b[0])
+
+
+func test_no_model_moves_into_space_still_occupied() -> void:
+    # A follower directly ahead in contact moves first, so the leader behind it
+    # never steps into its space.
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(11.0, 10.0)])
+    var worst := [INF]
+    var observer := func(positions: Dictionary) -> void:
+        worst[0] = minf(worst[0], positions[0].distance_to(positions[1]))
+    squad.begin_turn_movement(6.0)
+    SquadMover.plan_move(squad, Vector2(16.0, 10.0), [squad], null, Vector2(48.0, 32.0), observer)
+    _check(worst[0] >= 1.0 - ModelPlacement.CONTACT_TOLERANCE, "the leader never enters the follower's space mid-move: %.6f" % worst[0])
+    # A follower that cannot move stays an obstacle: the leader, ordered onto
+    # its place, stops in contact rather than assuming it will make way.
+    var pinned := _formation(&"p1_t", P1, [Vector2(13.0, 20.0), Vector2(10.0, 20.0)])
+    var enemy := _formation(&"p2_e", P2, [Vector2(9.0, 20.0)])
+    var f := _terrain_move_fixture([pinned, enemy])
+    _check_eq(f.movement.order_move(pinned, Vector2(10.0, 20.0)), MovementRules.Result.OK,
+        "the order is legal: own followers do not block an order")
+    _check_eq(pinned.get_model(1).position, Vector2(10.0, 20.0), "the follower, blocked by the enemy, cannot move")
+    _check(pinned.get_model(0).position.distance_to(Vector2(11.0, 20.0)) < 0.0001,
+        "the leader stops in contact behind it: %s" % pinned.get_model(0).position)
+    _check(not f.movement.last_plan.leader_reached, "and is reported short")
+    _check(_no_overlaps([pinned, enemy]), "no overlaps")
+    _free_fixture(f)

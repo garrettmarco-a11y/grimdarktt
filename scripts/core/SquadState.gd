@@ -168,14 +168,17 @@ func get_player() -> int:
     return _data.player if _data else 0
 
 
-## Every model, removed or not, in the original model order.
+## Every model, removed or not, in the original model order (by model_id,
+## whatever order they happen to be stored in).
 func get_models() -> Array[ModelState]:
-    return _models.duplicate()
+    var models := _models.duplicate()
+    models.sort_custom(func(a: ModelState, b: ModelState) -> bool: return a.model_id < b.model_id)
+    return models
 
 
 ## Surviving models, in the original model order.
 func get_living_models() -> Array[ModelState]:
-    return _models.filter(func(m: ModelState) -> bool: return not m.removed)
+    return get_models().filter(func(m: ModelState) -> bool: return not m.removed)
 
 
 ## Number of surviving models.
@@ -185,15 +188,19 @@ func get_model_count() -> int:
 
 ## The model with stable id `model_id`, removed or not, or null.
 func get_model(model_id: int) -> ModelState:
-    return _models[model_id] if model_id >= 0 and model_id < _models.size() else null
+    for model in _models:
+        if model.model_id == model_id:
+            return model
+    return null
 
 
 ## The current leader: the first surviving model in the original order.
 func get_leader() -> ModelState:
+    var leader: ModelState = null
     for model in _models:
-        if not model.removed:
-            return model
-    return null
+        if not model.removed and (leader == null or model.model_id < leader.model_id):
+            leader = model
+    return leader
 
 
 ## Profile governing the squad's movement: the leader's. Until models carry

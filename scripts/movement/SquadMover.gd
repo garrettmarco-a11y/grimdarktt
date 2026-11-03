@@ -8,10 +8,15 @@ class_name SquadMover
 ##
 ## Rules (approved by the project lead):
 ##   - Models move simultaneously in steps of at most STEP. Within a step they
-##     are taken front to back along the squad's direction of travel, and each
-##     is checked against every other living base where it stands at that
-##     moment, own squad included, so a model never overlaps one that has yet
-##     to move. Paths are checked continuously, not just at their ends.
+##     are taken in a fixed order: front to back along the squad's direction
+##     of travel (projection of the current position onto that direction,
+##     compared exactly), ties broken by model_id. Each is checked against
+##     every other living base where it stands at that moment, own squad
+##     included: a model that has not moved yet this step is an obstacle where
+##     it stands, so no model moves into space on the assumption that its
+##     occupant will move later. Paths are swept continuously, not just checked
+##     at their ends. The result therefore depends only on positions, ids and
+##     the order, never on the order models happen to be stored in.
 ##   - Each model pays for the path it actually travels, from its own
 ##     remaining allowance (difficult terrain doubled along its centre path,
 ##     unless `pay_terrain` is false, as for fall-back).
@@ -98,7 +103,9 @@ static func _resolve(squad: SquadState, targets: Dictionary, direction: Vector2,
         fixed_budget: float, observer: Callable) -> Plan:
     var leader := squad.get_leader()
     var movers: Array[_Mover] = []
-    for model in squad.get_living_models():
+    var models := squad.get_living_models()
+    models.sort_custom(func(a: ModelState, b: ModelState) -> bool: return a.model_id < b.model_id)
+    for model in models:
         var mover := _Mover.new()
         mover.model = model
         mover.position = model.position
@@ -121,7 +128,7 @@ static func _resolve(squad: SquadState, targets: Dictionary, direction: Vector2,
         active.sort_custom(func(a: _Mover, b: _Mover) -> bool:
             var da := a.position.dot(heading)
             var db := b.position.dot(heading)
-            if absf(da - db) > ModelPlacement.CONTACT_TOLERANCE:
+            if da != db:
                 return da > db
             return a.model.model_id < b.model.model_id)
         for mover in active:
@@ -257,11 +264,18 @@ static func _blocking_normal(mover: _Mover, step: Vector2, movers: Array[_Mover]
         if other != mover:
             bases.append([other.position, other.radius])
     bases.append_array(obstacles)
+    var best_at := Vector2.ZERO
     for base in bases:
         var gap: float = probe.distance_to(base[0]) - mover.radius - base[1]
-        if gap < best and _path_hits(mover.position, probe, mover.radius, base[0], base[1], 0.0):
+        if not _path_hits(mover.position, probe, mover.radius, base[0], base[1], 0.0):
+            continue
+        # Nearest blocker wins; exact ties go to the lower x, then y, so the
+        # choice never depends on the order bases are listed in.
+        var at: Vector2 = base[0]
+        if gap < best or (gap == best and (at.x < best_at.x or (at.x == best_at.x and at.y < best_at.y))):
             best = gap
-            normal = (mover.position - base[0]).normalized()
+            best_at = at
+            normal = (mover.position - at).normalized()
     if normal != Vector2.ZERO:
         return normal
     if terrain and terrain.base_crosses_impassable(mover.position, probe, mover.radius, 0.0):
