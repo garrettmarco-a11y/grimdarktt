@@ -3953,7 +3953,7 @@ func test_own_models_never_overlap_mid_move() -> void:
         squad.board_position = Vector2(10.0, 10.0)
         squad.begin_turn_movement(6.0)
         SquadMover.plan_move(squad, destination, [squad, enemy], null, Vector2(48.0, 32.0), observer)
-    _check(worst[0] >= 1.0 - SquadMover.CONTACT_SLACK - 0.000001,
+    _check(worst[0] >= 1.0 - ModelPlacement.CONTACT_TOLERANCE,
         "models in contact moving forward, backward and sideways never overlap at any intermediate step: closest %.6f" % worst[0])
     squad.board_position = Vector2(10.0, 10.0)
     squad.begin_turn_movement(6.0)
@@ -4083,3 +4083,73 @@ func test_tokens_draw_individual_models() -> void:
     main.queue_free()
     await process_frame
 
+
+# --- Task 2.2 follow-up: contact precision ---
+
+func test_contact_tolerance_is_only_float_rounding() -> void:
+    var tol := ModelPlacement.CONTACT_TOLERANCE
+    _check(tol <= 0.00001, "the contact tolerance is float32-rounding sized, not a rules allowance")
+    _check(not ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(11.0, 10.0), 0.5), "exact contact is legal")
+    var rounded_contacts_rejected := 0
+    for i in 3600:
+        var direction := Vector2.RIGHT.rotated(deg_to_rad(0.1 * i + 0.013))
+        var a := Vector2(3.7 + fmod(i * 1.3, 40.0), 2.1 + fmod(i * 0.7, 28.0))
+        if ModelPlacement.bases_overlap(a, 0.5, a + direction, 0.5):
+            rounded_contacts_rejected += 1
+    _check_eq(rounded_contacts_rejected, 0, "3600 exact contacts at awkward angles and positions stay legal despite float32 rounding")
+    _check(ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(10.9999, 10.0), 0.5), "a 0.0001 overlap is an overlap")
+    _check(ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(10.99997, 10.0), 0.5), "a 0.00003 overlap is an overlap")
+    _check(ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(10.99, 10.0), 0.5), "a 0.01 overlap is an overlap")
+    _check(not ModelPlacement.bases_overlap(Vector2(10.0, 10.0), 0.5, Vector2(11.0001, 10.0), 0.5), "a 0.0001 gap is legal")
+    var squads: Array[SquadState] = [_formation(&"p1_a", P1, [Vector2(10.0, 10.0)]), _formation(&"p2_b", P2, [Vector2(10.9995, 10.0)])]
+    _check_eq(ModelPlacement.find_overlaps(squads).size(), 1, "layout validation catches a 0.0005 overlap")
+    var a := _formation(&"p1_m", P1, [Vector2(10.0, 20.0)])
+    var b := _formation(&"p2_e", P2, [Vector2(14.0, 20.0)])
+    var f := _terrain_move_fixture([a, b])
+    _check_eq(f.movement.order_move(a, Vector2(13.0005, 20.0)), MovementRules.Result.BLOCKED_BY_MODEL,
+        "an order 0.0005 into another base is refused (order validation and collision agree)")
+    _check_eq(f.movement.order_move(a, Vector2(13.01, 20.0)), MovementRules.Result.BLOCKED_BY_MODEL, "an order 0.01 into it too")
+    _check_eq(f.movement.order_move(a, Vector2(12.9999, 20.0)), MovementRules.Result.OK, "an order leaving a 0.0001 gap is accepted")
+    _check(a.board_position.distance_to(b.board_position) >= 1.0, "and leaves a real gap")
+    _check_eq(f.movement.order_move(a, Vector2(13.0, 20.0)), MovementRules.Result.OK, "closing the gap to exact contact is accepted")
+    _check_eq(a.board_position.distance_to(b.board_position), 1.0, "the bases are in exact contact")
+    _free_fixture(f)
+
+
+func test_approach_stops_at_exact_contact_from_every_angle() -> void:
+    var board := Vector2(48.0, 32.0)
+    var below_contact := 0
+    var short_of_contact := 0
+    var intermediate_overlaps := 0
+    for i in 36:
+        var direction := Vector2.RIGHT.rotated(deg_to_rad(10.0 * i + 0.37))
+        var post := _formation(&"p2_post", P2, [Vector2(24.3, 16.1)])
+        var runner := _formation(&"p1_run", P1, [Vector2(24.3, 16.1) - direction * 3.3])
+        runner.begin_turn_movement(6.0)
+        var observer := func(positions: Dictionary) -> void:
+            for id in positions:
+                if ModelPlacement.bases_overlap(positions[id], 0.5, post.board_position, 0.5):
+                    intermediate_overlaps += 1
+        var plan := SquadMover.plan_shift(runner, direction, 5.0, [runner, post], null, board, observer)
+        var gap := plan.position_of(runner.get_leader()).distance_to(post.board_position) - 1.0
+        if gap < 0.0:
+            below_contact += 1
+        if gap > 0.0001:
+            short_of_contact += 1
+    _check_eq(intermediate_overlaps, 0, "no intermediate position overlaps, from 36 angles")
+    _check_eq(below_contact, 0, "a blocked model never stops inside exact computed contact, not even by rounding")
+    _check_eq(short_of_contact, 0, "it stops in contact, within 0.0001")
+
+
+func test_repeated_movement_toward_contact() -> void:
+    var squad := _formation(&"p1_s", P1, [Vector2(10.0, 10.0), Vector2(10.0, 12.0)])
+    var enemy := _formation(&"p2_e", P2, [Vector2(15.0, 12.0)])
+    var f := _terrain_move_fixture([squad, enemy], null, 12.0)
+    var closest := INF
+    for i in 12:
+        _check_eq(f.movement.order_move(squad, Vector2(10.5 + 0.5 * i, 10.0)), MovementRules.Result.OK, "short leg %d" % i)
+        closest = minf(closest, squad.get_model(1).position.distance_to(enemy.board_position))
+        _check(ModelPlacement.find_overlaps([squad, enemy]).is_empty(), "no overlap after leg %d" % i)
+    _check(closest >= 1.0, "pushing a follower into an enemy over 12 legs never goes inside exact contact: %.7f" % closest)
+    _check(closest < 1.0001, "it does reach contact")
+    _free_fixture(f)

@@ -12,25 +12,34 @@ class_name ModelPlacement
 ##     line-of-sight geometry never obstruct bases.
 ##   - Removed models occupy no space.
 
-## Tolerance for contact, in board units: bases this close to touching count
-## as touching.
-const EPSILON := 0.001
+## Floating-point allowance for contact, in board units. Positions are stored
+## as float32 Vector2s: two bases placed in mathematically exact contact on a
+## 48 x 32 board compute up to ~0.000004 apart from exact, about half of them
+## *below* the radius sum. Without an allowance exact contact would often read
+## as overlap. This is the only contact tolerance: order validation, movement
+## and layout validation all use it, so they always agree. It is not a rules
+## allowance: movement never aims inside it (SquadMover stops approaching
+## models at exact computed contact), and any overlap deeper than it is real
+## and always rejected.
+const CONTACT_TOLERANCE := 0.00001
 
 
 ## True if two bases overlap (touching is allowed).
 static func bases_overlap(a: Vector2, a_radius: float, b: Vector2, b_radius: float) -> bool:
-    return a.distance_to(b) < a_radius + b_radius - EPSILON
+    return a.distance_to(b) < a_radius + b_radius - CONTACT_TOLERANCE
 
 
 ## True if a base moving in a straight line from `from` to `to` would overlap a
-## stationary base at `other` anywhere on the way.
-static func path_hits_base(from: Vector2, to: Vector2, radius: float, other: Vector2, other_radius: float) -> bool:
-    return TerrainGeometry.distance_to_segment(other, from, to) < radius + other_radius - EPSILON
+## stationary base at `other` anywhere on the way, its end included.
+static func path_hits_base(from: Vector2, to: Vector2, radius: float, other: Vector2, other_radius: float,
+        tolerance := CONTACT_TOLERANCE) -> bool:
+    var contact := radius + other_radius - tolerance
+    return TerrainGeometry.distance_to_segment(other, from, to) < contact or to.distance_to(other) < contact
 
 
 ## True if the whole base lies on a board of `board_size` (edges may touch,
 ## within `tolerance`).
-static func base_on_board(center: Vector2, radius: float, board_size: Vector2, tolerance := EPSILON) -> bool:
+static func base_on_board(center: Vector2, radius: float, board_size: Vector2, tolerance := CONTACT_TOLERANCE) -> bool:
     return center.x >= radius - tolerance and center.y >= radius - tolerance \
         and center.x <= board_size.x - radius + tolerance and center.y <= board_size.y - radius + tolerance
 

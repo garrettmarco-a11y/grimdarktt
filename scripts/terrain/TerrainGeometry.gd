@@ -121,16 +121,17 @@ static func segment_distance(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> 
 
 
 ## True if a circle of `radius` swept from `a` to `b` (a == b for a single
-## position) overlaps the polygon's interior by more than EPSILON anywhere on
-## the way. Touching the boundary is not an overlap.
-static func swept_circle_overlaps(a: Vector2, b: Vector2, radius: float, polygon: PackedVector2Array) -> bool:
+## position) overlaps the polygon's interior by more than `tolerance` anywhere
+## on the way. Touching the boundary is not an overlap.
+static func swept_circle_overlaps(a: Vector2, b: Vector2, radius: float, polygon: PackedVector2Array,
+        tolerance: float) -> bool:
     if polygon.size() < 3:
         return false
     if is_strictly_inside(polygon, a):
         return true
     var n := polygon.size()
     for i in n:
-        if segment_distance(a, b, polygon[i], polygon[(i + 1) % n]) < radius - EPSILON:
+        if segment_distance(a, b, polygon[i], polygon[(i + 1) % n]) < radius - tolerance:
             return true
     return false
 

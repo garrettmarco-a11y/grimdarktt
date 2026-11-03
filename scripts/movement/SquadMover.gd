@@ -15,9 +15,11 @@ class_name SquadMover
 ##   - Each model pays for the path it actually travels, from its own
 ##     remaining allowance (difficult terrain doubled along its centre path,
 ##     unless `pay_terrain` is false, as for fall-back).
-##   - A blocked model advances to exact contact. A follower then tries one
-##     slide along the obstacle for that step; if that is blocked too it stops
-##     where it is. There is no pathfinding and no model is ever teleported.
+##   - A blocked model advances to exact computed contact (not into the
+##     ModelPlacement.CONTACT_TOLERANCE band, which only absorbs float32
+##     rounding). A follower then tries one slide along the obstacle for that
+##     step; if that is blocked too it stops where it is. There is no
+##     pathfinding and no model is ever teleported.
 ##   - A model that runs out of allowance stops where it is.
 
 ## Longest single step, in board units: well under a base radius, so nothing
@@ -26,9 +28,6 @@ const STEP := 0.2
 ## Smallest progress that counts as moving; a model that cannot make this
 ## much progress, straight or sliding, stops.
 const MIN_PROGRESS := 0.001
-## Slack for contact while moving: a base stops within this of exact contact.
-## Far below ModelPlacement.EPSILON, so resolved positions never overlap.
-const CONTACT_SLACK := 0.00001
 ## Allowance tolerance, as in MovementRules.
 const EPSILON := 0.001
 const BISECTION_STEPS := 32
@@ -122,7 +121,7 @@ static func _resolve(squad: SquadState, targets: Dictionary, direction: Vector2,
         active.sort_custom(func(a: _Mover, b: _Mover) -> bool:
             var da := a.position.dot(heading)
             var db := b.position.dot(heading)
-            if absf(da - db) > CONTACT_SLACK:
+            if absf(da - db) > ModelPlacement.CONTACT_TOLERANCE:
                 return da > db
             return a.model.model_id < b.model.model_id)
         for mover in active:
@@ -135,7 +134,7 @@ static func _resolve(squad: SquadState, targets: Dictionary, direction: Vector2,
     var plan := Plan.new()
     for mover in movers:
         plan.moves[mover.model.model_id] = [mover.position, mover.cost]
-        var reached := mover.position.distance_to(mover.target) <= EPSILON
+        var reached := mover.position.distance_to(mover.target) <= ModelPlacement.CONTACT_TOLERANCE
         plan.reached[mover.model.model_id] = reached
         if not reached:
             plan.fell_short.append(mover.model)
@@ -148,14 +147,14 @@ static func _resolve(squad: SquadState, targets: Dictionary, direction: Vector2,
 static func _advance(mover: _Mover, movers: Array[_Mover], obstacles: Array, terrain: TerrainMap,
         board_size: Vector2, pay_terrain: bool) -> void:
     var to_target := mover.target - mover.position
-    if to_target.length() <= EPSILON or mover.budget - mover.cost <= EPSILON:
+    if to_target.length() <= ModelPlacement.CONTACT_TOLERANCE or mover.budget - mover.cost <= EPSILON:
         mover.stopped = true
         return
     var step := to_target.limit_length(STEP)
     var start := mover.position
     var start_cost := mover.cost
     _try(mover, step, movers, obstacles, terrain, board_size, pay_terrain)
-    if mover.position.distance_to(start) >= MIN_PROGRESS:
+    if mover.position.distance_to(start) >= MIN_PROGRESS or mover.position == mover.target:
         return
     if mover.may_slide:
         var normal := _blocking_normal(mover, step, movers, obstacles, terrain, board_size)
@@ -179,12 +178,15 @@ static func _try(mover: _Mover, step: Vector2, movers: Array[_Mover], obstacles:
     var reach := 1.0
     if _cost(from, from + step, terrain, pay_terrain) > left:
         reach = _bisect(func(t: float) -> bool: return _cost(from, from + step * t, terrain, pay_terrain) <= left, 1.0)
-    if not _legal(mover, from, from + step * reach, movers, obstacles, terrain, board_size):
-        reach = _bisect(func(t: float) -> bool: return _legal(mover, from, from + step * t, movers, obstacles, terrain, board_size), reach)
+    # A full step may end within the float-rounding band of contact (e.g.
+    # formation-mates moving together); a blocked step is cut back to exact
+    # computed contact, never into the band.
+    if not _legal(mover, from, from + step * reach, movers, obstacles, terrain, board_size, ModelPlacement.CONTACT_TOLERANCE):
+        reach = _bisect(func(t: float) -> bool: return _legal(mover, from, from + step * t, movers, obstacles, terrain, board_size, 0.0), reach)
     if reach <= 0.0:
         return
     var to := from + step * reach
-    if reach >= 1.0 and from.distance_to(mover.target) <= step.length() + CONTACT_SLACK:
+    if reach >= 1.0 and from.distance_to(mover.target) <= step.length() + ModelPlacement.CONTACT_TOLERANCE:
         to = mover.target  # the final step lands exactly on the target
     mover.cost += _cost(from, to, terrain, pay_terrain)
     mover.position = to
@@ -210,30 +212,37 @@ static func _cost(from: Vector2, to: Vector2, terrain: TerrainMap, pay_terrain: 
     return from.distance_to(to)
 
 
-## True if `mover`'s base can travel straight from `from` to `to`.
+## True if `mover`'s base can travel straight from `from` to `to`, with
+## `tolerance` allowed for float rounding at contact (0 for exact contact).
+## Any path legal with tolerance 0 is legal with CONTACT_TOLERANCE, and any
+## path legal with CONTACT_TOLERANCE ends where ModelPlacement finds no
+## overlap: movement and validation agree by construction.
 static func _legal(mover: _Mover, from: Vector2, to: Vector2, movers: Array[_Mover], obstacles: Array,
-        terrain: TerrainMap, board_size: Vector2) -> bool:
-    if not ModelPlacement.base_on_board(to, mover.radius, board_size, CONTACT_SLACK):
+        terrain: TerrainMap, board_size: Vector2, tolerance: float) -> bool:
+    if not ModelPlacement.base_on_board(to, mover.radius, board_size, tolerance):
         return false
-    if terrain and terrain.base_crosses_impassable(from, to, mover.radius):
+    if terrain and terrain.base_crosses_impassable(from, to, mover.radius, tolerance):
         return false
     for other in movers:
-        if other != mover and _path_hits(from, to, mover.radius, other.position, other.radius):
+        if other != mover and _path_hits(from, to, mover.radius, other.position, other.radius, tolerance):
             return false
     for obstacle in obstacles:
-        if _path_hits(from, to, mover.radius, obstacle[0], obstacle[1]):
+        if _path_hits(from, to, mover.radius, obstacle[0], obstacle[1], tolerance):
             return false
     return true
 
 
 ## True if the path from `from` to `to` brings the base into overlap with the
-## base at `other`. A base already overlapping (only possible in an invalid
-## layout) may still move away from it, never closer.
-static func _path_hits(from: Vector2, to: Vector2, radius: float, other: Vector2, other_radius: float) -> bool:
-    var contact := radius + other_radius - CONTACT_SLACK
+## base at `other`. A base that starts closer than contact (rounding at
+## contact, or an invalid layout) may move along or away from it, never
+## closer, and never below the shared contact tolerance.
+static func _path_hits(from: Vector2, to: Vector2, radius: float, other: Vector2, other_radius: float,
+        tolerance: float) -> bool:
+    var contact := radius + other_radius - tolerance
     if from.distance_to(other) < contact:
-        return to.distance_to(other) < from.distance_to(other)
-    return TerrainGeometry.distance_to_segment(other, from, to) < contact
+        return to.distance_to(other) < from.distance_to(other) \
+            or to.distance_to(other) < radius + other_radius - ModelPlacement.CONTACT_TOLERANCE
+    return ModelPlacement.path_hits_base(from, to, radius, other, other_radius, tolerance)
 
 
 ## Outward normal of whatever blocks `mover`'s `step`: another base, impassable
@@ -250,16 +259,16 @@ static func _blocking_normal(mover: _Mover, step: Vector2, movers: Array[_Mover]
     bases.append_array(obstacles)
     for base in bases:
         var gap: float = probe.distance_to(base[0]) - mover.radius - base[1]
-        if gap < best and _path_hits(mover.position, probe, mover.radius, base[0], base[1]):
+        if gap < best and _path_hits(mover.position, probe, mover.radius, base[0], base[1], 0.0):
             best = gap
             normal = (mover.position - base[0]).normalized()
     if normal != Vector2.ZERO:
         return normal
-    if terrain and terrain.base_crosses_impassable(mover.position, probe, mover.radius):
+    if terrain and terrain.base_crosses_impassable(mover.position, probe, mover.radius, 0.0):
         var nearest = terrain.nearest_impassable_point(mover.position)
         if nearest != null:
             return (mover.position - nearest).normalized()
-    if not ModelPlacement.base_on_board(probe, mover.radius, board_size):
+    if not ModelPlacement.base_on_board(probe, mover.radius, board_size, 0.0):
         if probe.x < mover.radius:
             return Vector2.RIGHT
         if probe.y < mover.radius:

@@ -124,10 +124,13 @@ func crosses_impassable(from: Vector2, to: Vector2) -> bool:
 
 
 ## True if a model base of `radius` swept from `from` to `to` (or standing at
-## `from` when they are equal) overlaps any impassable_area. Touching is fine.
-func base_crosses_impassable(from: Vector2, to: Vector2, radius: float) -> bool:
+## `from` when they are equal) overlaps any impassable_area. Touching is fine,
+## within `tolerance` for float rounding (ModelPlacement.CONTACT_TOLERANCE by
+## default, the same allowance as base-to-base contact; 0 for exact contact).
+func base_crosses_impassable(from: Vector2, to: Vector2, radius: float,
+        tolerance := ModelPlacement.CONTACT_TOLERANCE) -> bool:
     for placed in _placed:
-        if TerrainGeometry.swept_circle_overlaps(from, to, radius, placed.impassable_area):
+        if TerrainGeometry.swept_circle_overlaps(from, to, radius, placed.impassable_area, tolerance):
             return true
     return false
 
