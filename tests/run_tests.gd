@@ -4478,6 +4478,7 @@ func _charge_fixture(squads: Array, rolls: Array[int] = [], terrain: TerrainMap 
     activation.bind(battle, tm)
     var tracker := EngagementTracker.new()
     tracker.bind(tm)
+    activation.engagements = tracker  # as in Main: commitment restricts activation
     var charge := ChargeController.new()
     charge.bind(tm, activation, battle, tracker, Vector2(48.0, 32.0))
     charge.terrain = terrain
@@ -4625,7 +4626,7 @@ func test_successful_charge_commits_and_locks_target() -> void:
     _check_eq(engagement.origin, EngagementTracker.Origin.CHARGE, "a charging engagement")
     _check_eq([f.tracker.charge_target_of(&"p1_a"), f.tracker.attack_target_of(&"p1_a")], [&"p2_x", &"p2_x"], "target locked")
     _check_eq(f.tm.get_remaining_activations(P2), p2_waiting - 1, "the charged squad loses its waiting Charge activation")
-    _check_eq(f.activation.can_activate(x), ActivationController.Result.NOT_ELIGIBLE, "and cannot declare a charge of its own")
+    _check_eq(f.activation.can_activate(x), ActivationController.Result.ENGAGED, "and cannot declare a charge of its own: it is engaged")
     _check(_no_overlaps(f.battle.get_squads()), "no overlaps")
     _free_charge_fixture(f)
 
@@ -5185,16 +5186,16 @@ func test_engagement_in_main_scene() -> void:
     _check(not rolled.is_empty() and rolled[0].begins_with("Strikes (all rolled before casualties):"), "the HUD lists the rolled strikes")
     var panel: AllocationPanel = main.hud.allocation_panel
     var guard := 0
-    while main.casualties.is_pending() and guard < 20:
+    while main.casualties.is_pending() and main.turn_manager.turn_number == 1 and guard < 20:
         guard += 1
         _check(panel.visible and panel.title_label.text.contains("strike on"), "each allocation names its strike: %s" % panel.title_label.text)
         var target: SquadState = main.casualties.get_pending_result().target_squad
         panel.get_button(target.get_living_models()[0].model_id).pressed.emit()
-    _check_eq(fought.size(), 1, "one engagement fought")
+    _check(fought.size() >= 1, "the round's engagement was fought")
     _check_eq(fought[0][0], [&"p2_raider_squad", &"p1_line_squad"], "between the charger and its target")
     _check_eq(fought[0][1], 2, "two strikes: one each way")
-    _check_eq(main.turn_manager.turn_number, 2, "the Assault phase completes and the round ends")
-    _check(not main.hud.target_panel.visible and not panel.visible, "no panel left open")
+    _check(main.turn_manager.turn_number >= 2, "the Assault phase completes and the round ends")
+    _check(not main.hud.target_panel.visible, "no declaration left open")
     main.queue_free()
     await process_frame
 
@@ -5571,4 +5572,290 @@ func test_consolidation_report_text() -> void:
     _check_eq(HUD.format_consolidation(report),
         "Consolidation:\np1_a -> p2_x: 1 moved, 1 held\np2_x -> p1_a: 0 moved, 1 held", "per squad: target, models moved, models held in contact")
     _free_consolidation_setup(setup)
+
+
+# --- Task 2.3.1: engagement restrictions and integration cleanup ---
+
+## A started game (Movement phase) whose activation is restricted by a
+## round-long engagement tracker, with movement and shooting controllers.
+func _restricted_fixture(squads: Array) -> Dictionary:
+    var battle := BattleState.new()
+    for squad in squads:
+        battle.add_squad(squad)
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var tracker := EngagementTracker.new()
+    tracker.bind(tm)
+    activation.engagements = tracker
+    var movement := MovementController.new()
+    movement.bind(battle, tm, Vector2(48.0, 32.0))
+    movement.activation = activation
+    var allocator := CasualtyAllocator.new()
+    allocator.bind(activation, battle)
+    var shooting := ShootingController.new()
+    shooting.bind(tm, activation, battle, allocator)
+    var charge := ChargeController.new()
+    charge.bind(tm, activation, battle, tracker, Vector2(48.0, 32.0))
+    tm.start_game()
+    return {"battle": battle, "tm": tm, "activation": activation, "tracker": tracker, "movement": movement,
+        "shooting": shooting, "charge": charge}
+
+
+func _free_restricted_fixture(f: Dictionary) -> void:
+    for key in ["tm", "activation", "movement", "shooting", "charge"]:
+        f[key].free()
+
+
+func test_committed_squad_cannot_activate_in_movement_shooting_or_charge() -> void:
+    # A and X are committed to an engagement but nowhere near each other:
+    # commitment, not contact, is what restricts them. B and Y are free.
+    var a := _squad_at(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var b := _squad_at(&"p1_b", P1, [Vector2(10.0, 20.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(30.0, 10.0)])
+    var y := _squad_at(&"p2_y", P2, [Vector2(30.0, 20.0)])
+    var f := _restricted_fixture([a, b, x, y])
+    var waiting: Array = [f.tm.get_remaining_activations(P1), f.tm.get_remaining_activations(P2)]
+    f.tracker.commit([&"p1_a", &"p2_x"])
+    _check(not EngagementRules.squads_in_contact(a, x), "(A and X are not in base contact)")
+    _check_eq([f.tm.get_remaining_activations(P1), f.tm.get_remaining_activations(P2)], [waiting[0] - 1, waiting[1] - 1],
+        "becoming committed withdraws each squad's waiting Movement activation")
+    # Movement
+    _check_eq(f.activation.can_activate(a), ActivationController.Result.ENGAGED, "Movement: A is engaged")
+    _check_eq(f.activation.activate(a), ActivationController.Result.ENGAGED, "a direct activation attempt is refused")
+    _check_eq(f.movement.order_move(a, Vector2(12.0, 10.0)), MovementRules.Result.NOT_ACTIVATED,
+        "and a direct move order, bypassing the UI, is refused")
+    _check_eq(a.board_position, Vector2(10.0, 10.0), "A has not moved")
+    _check_eq(f.activation.activate(b), ActivationController.Result.OK, "an uncommitted squad activates as usual")
+    _check_eq(f.movement.order_move(b, Vector2(12.0, 20.0)), MovementRules.Result.OK, "and moves")
+    f.activation.end_activation()
+    _complete_phase(f.activation, f.battle, f.tm)
+    # Shooting
+    _check_eq(f.tm.current_phase, Phase.SHOOTING, "Shooting")
+    _check(not f.activation.is_squad_eligible(a, Phase.SHOOTING) and not f.activation.is_squad_eligible(x, Phase.SHOOTING),
+        "Shooting: committed squads are not counted")
+    _check_eq(f.tm.get_remaining_activations(P1), 1, "only B may shoot for Player 1")
+    _check_eq(f.shooting.order_shot(a, y), ShootingRules.OrderResult.NOT_ACTIVATED, "a direct shot by A is refused")
+    _complete_phase(f.activation, f.battle, f.tm)
+    # Charge
+    _check_eq(f.tm.current_phase, Phase.CHARGE, "Charge")
+    _check(not f.activation.is_squad_eligible(a, Phase.CHARGE), "Charge: A may not declare")
+    _check_eq(f.charge.declare_charge(a, y), ChargeRules.Result.NOT_ACTIVATED, "a direct declaration is refused")
+    _check_eq(ChargeRules.validate(a, y, Phase.CHARGE, true, f.battle.get_squads(), f.tracker), ChargeRules.Result.ALREADY_ENGAGED,
+        "and the charge rules refuse it even as if activated")
+    _check(f.activation.is_squad_eligible(b, Phase.CHARGE), "B, uncommitted, may charge")
+    _complete_phase(f.activation, f.battle, f.tm)
+    # Next round: the commitment resets with the round.
+    _check_eq([f.tm.current_phase, f.tm.turn_number], [Phase.MOVEMENT, 2], "round 2")
+    _check(not f.tracker.is_committed(&"p1_a"), "commitment reset at the start of the round")
+    _check(f.activation.is_squad_eligible(a, Phase.MOVEMENT), "A may move again")
+    _free_restricted_fixture(f)
+
+
+func test_committed_squads_still_fight_in_assault() -> void:
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(16.0, 10.0)])
+    var f := _engagement_fixture([a, x], [], true)
+    f.charge.dice = ScriptedDice.new([6])
+    _activate_squad(f, a)
+    f.charge.declare_charge(a, x)
+    _check(f.tracker.is_committed(&"p1_a") and f.tracker.is_committed(&"p2_x"), "both committed by the charge")
+    _check_eq(f.activation.can_activate(x), ActivationController.Result.ENGAGED, "the charged squad cannot act in Charge")
+    _finish_charge_phase(f)
+    _check(not f.log.rolled.is_empty() and [&"p1_a", &"p2_x"] in f.log.rolled[0] and [&"p2_x", &"p1_a"] in f.log.rolled[0],
+        "both committed squads strike in the Assault procedure")
+    _drain_allocations(f)
+    _check_eq(f.log.resolved.size(), 1, "and the engagement resolves")
+    _free_engagement_fixture(f)
+
+
+func test_consolidation_uses_a_phase_start_contact_snapshot() -> void:
+    # A0 touches X0 (held). B, consolidating before X, brings B0 into contact
+    # with X1, which was not in contact when the phase began; X1 still makes
+    # its full move toward its target A.
+    var a := _formation(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var b := _formation(&"p1_b", P1, [Vector2(14.0, 17.0)])
+    var x := _formation(&"p2_x", P2, [Vector2(11.0, 10.0), Vector2(14.0, 14.0)])
+    var setup := _consolidation_setup([a, b, x], {&"p1_a": &"p2_x", &"p1_b": &"p2_x", &"p2_x": &"p1_a"})
+    var x1 := x.get_model(1)
+    var start := x1.position
+    var report: Array = setup[0].consolidate([setup[3]])
+    _check(ModelPlacement.models_in_contact(b.get_model(0), x1) or b.get_model(0).position.distance_to(start) < 1.001,
+        "B's consolidation reached X1's starting position")
+    _check(x1.position.distance_to(start) > 1.999 and x1.position.distance_to(start) < 2.001,
+        "X1, not in contact when Consolidation began, still moves its full 2.0: %.4f" % x1.position.distance_to(start))
+    _check_eq(x.get_model(0).position, Vector2(11.0, 10.0), "X0, in contact at the start, stays where it is")
+    var x_entry: Dictionary = report.filter(func(e): return e.squad == x)[0]
+    _check_eq([x_entry.held, x_entry.paths.has(1)], [1, true], "only X0 is held; X1 is among the models that moved")
+    _check(_no_overlaps([a, b, x]), "no overlaps")
+    _free_consolidation_setup(setup)
+
+
+class UnregisteredConsolidation extends ConsolidationController:
+    func bind(_tm: TurnManager, _battle: BattleState, _tracker: EngagementTracker,
+            _engagements: EngagementController, _board_units: Vector2) -> void:
+        pass  # deliberately never registers the Consolidation procedure
+
+
+func test_required_procedures_are_checked() -> void:
+    var tm := TurnManager.new()
+    _check_eq(tm.missing_procedures(), [Phase.ASSAULT, Phase.CONSOLIDATION], "a bare TurnManager has neither procedure")
+    tm.register_procedure(Phase.ASSAULT, func(): pass)
+    _check_eq(Main.required_procedure_errors(tm),
+        PackedStringArray(["Game setup incomplete: no procedure registered for the Consolidation phase"]), "the missing one is named")
+    tm.register_procedure(Phase.CONSOLIDATION, func(): pass)
+    _check(tm.missing_procedures().is_empty() and Main.required_procedure_errors(tm).is_empty(), "complete")
+    tm.free()
+    var bare := TurnManager.new()
+    bare.start_game()
+    _check_eq(bare.turn_number, 1, "isolated TurnManagers still start without procedures (test setups)")
+    bare.free()
+    var main: Node = await _load_main()
+    _check(main.procedure_errors.is_empty() and main.turn_manager.turn_number == 1, "the real game registers both and starts")
+    main.queue_free()
+    await process_frame
+    var broken: Node = load("res://scenes/core/Main.tscn").instantiate()
+    broken.consolidation.free()
+    broken.consolidation = UnregisteredConsolidation.new()
+    print("        (the next error is expected)")
+    root.add_child(broken)
+    await process_frame
+    _check_eq(broken.procedure_errors.size(), 1, "a game missing a required procedure is detected")
+    _check_eq(broken.turn_manager.turn_number, 0, "and does not start")
+    _check(broken.hud.order_feedback.text.begins_with("Game setup incomplete"), "the HUD says why")
+    broken.queue_free()
+    await process_frame
+
+
+func test_charge_reach_indicator_matches_charge_rules() -> void:
+    var main: Node = await _load_main()
+    var overlay: MovementOverlay = main.movement_overlay
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    main.selection.select(line)
+    _check(not overlay.is_showing_charge_reach(), "no charge reach outside the Charge phase")
+    raider.board_position = Vector2(26.0, 16.0)
+    for i in 2:
+        _complete_phase(main.activation, main.battle, main.turn_manager)
+    _check_eq(main.turn_manager.current_phase, Phase.CHARGE, "Charge phase")
+    main.selection.select(line)
+    _check(overlay.is_showing_charge_reach(), "a squad that may charge shows its reach")
+    var model := line.get_model(0)
+    _check_eq(overlay.charge_reach_radius(model), ChargeRules.max_charge_distance(line) + model.get_base_radius(),
+        "reach circle: M + 6 plus the base radius")
+    _check_eq(overlay.charge_targets(), ChargeRules.valid_targets(line, main.battle.get_squads(), main.engagements),
+        "highlighted targets are exactly those the charge rules accept")
+    # Agreement at the boundary: a target model whose base edge touches the
+    # reach circle is in range; a little further it is not.
+    var gap: float = ChargeRules.closest_edge_distance(line, raider)
+    raider.board_position += Vector2(ChargeRules.max_charge_distance(line) - gap, 0.0)
+    _check(overlay.charge_targets().has(raider), "edge exactly M + 6 away: highlighted")
+    _check_eq(ChargeRules.validate(line, raider, Phase.CHARGE, true, main.battle.get_squads(), main.engagements),
+        ChargeRules.Result.OK, "and the declaration would be accepted")
+    raider.board_position += Vector2(0.05, 0.0)
+    _check(not overlay.charge_targets().has(raider), "0.05 further: not highlighted")
+    _check_eq(ChargeRules.validate(line, raider, Phase.CHARGE, true, main.battle.get_squads(), main.engagements),
+        ChargeRules.Result.OUT_OF_RANGE, "and the declaration would be refused")
+    line.morale_status = SquadState.MoraleStatus.SHAKEN
+    overlay.queue_redraw()
+    _check(not overlay.is_showing_charge_reach(), "a Shaken squad shows no reach")
+    line.morale_status = SquadState.MoraleStatus.BROKEN
+    _check(not overlay.is_showing_charge_reach(), "nor does a Broken squad")
+    line.morale_status = SquadState.MoraleStatus.STEADY
+    main.engagements.commit([&"p1_line_squad", &"p2_raider_squad"])
+    _check(not overlay.is_showing_charge_reach(), "nor a squad committed to an engagement")
+    main.queue_free()
+    await process_frame
+
+
+func test_charge_reach_hidden_once_the_squad_has_acted() -> void:
+    var main: Node = await _load_main()
+    var overlay: MovementOverlay = main.movement_overlay
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    main.battle.get_squad(&"p2_raider_squad").board_position = Vector2(30.0, 16.0)
+    for i in 2:
+        _complete_phase(main.activation, main.battle, main.turn_manager)
+    main.selection.select(line)
+    main.activation.activate(line)
+    _check(overlay.is_showing_charge_reach(), "shown while the squad is activated to charge")
+    main.activation.end_activation()
+    _check(main.activation.has_activated(line) and not overlay.is_showing_charge_reach(),
+        "hidden once it has held: it can no longer declare this phase")
+    main.queue_free()
+    await process_frame
+
+
+func test_squads_in_contact_cannot_move_or_shoot() -> void:
+    # A and X are in base contact (an ongoing engagement) but not committed.
+    var a := _squad_at(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    var b := _squad_at(&"p1_b", P1, [Vector2(10.0, 25.0)])
+    var y := _squad_at(&"p2_y", P2, [Vector2(30.0, 25.0)])
+    var f := _restricted_fixture([a, x, b, y])
+    _check(not f.tracker.is_committed(&"p1_a"), "(not committed)")
+    _check_eq([f.tm.get_remaining_activations(P1), f.tm.get_remaining_activations(P2)], [1, 1],
+        "Movement: only the squads out of contact are counted")
+    _check_eq(f.activation.can_activate(a), ActivationController.Result.ENGAGED, "A, in contact, cannot move away")
+    _check_eq(f.activation.activate(b), ActivationController.Result.OK, "B can")
+    f.activation.end_activation()
+    _complete_phase(f.activation, f.battle, f.tm)
+    _check_eq(f.tm.current_phase, Phase.SHOOTING, "Shooting")
+    _check(not f.activation.is_squad_eligible(a, Phase.SHOOTING) and not f.activation.is_squad_eligible(x, Phase.SHOOTING),
+        "squads in contact cannot shoot either")
+    _complete_phase(f.activation, f.battle, f.tm)
+    _complete_phase(f.activation, f.battle, f.tm)
+    _check_eq([f.tm.current_phase, f.tm.turn_number], [Phase.MOVEMENT, 2], "round 2")
+    _check_eq(f.activation.can_activate(a), ActivationController.Result.ENGAGED, "still in contact: still restricted")
+    var unbound := ActivationController.new()
+    var tm := TurnManager.new()
+    unbound.bind(f.battle, tm)
+    _check(not unbound.is_engaged_restricted(a, Phase.MOVEMENT), "without a tracker bound (isolated tests) nothing is restricted")
+    unbound.free()
+    tm.free()
+    _free_restricted_fixture(f)
+
+
+func test_moving_into_contact_withdraws_the_waiting_enemy() -> void:
+    var a := _squad_at(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var b := _squad_at(&"p1_b", P1, [Vector2(10.0, 25.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(14.0, 10.0)])
+    var y := _squad_at(&"p2_y", P2, [Vector2(30.0, 25.0)])
+    var f := _restricted_fixture([a, b, x, y])
+    _check_eq(f.activation.get_active_player(), P1, "Player 1 moves first")
+    f.activation.activate(a)
+    _check_eq(f.movement.order_move(a, Vector2(13.0, 10.0)), MovementRules.Result.OK, "A moves into base contact with X")
+    f.activation.end_activation()
+    _check_eq(f.tm.get_remaining_activations(P2), 1, "X, now in contact, has lost its waiting activation")
+    _check_eq(f.activation.can_activate(x), ActivationController.Result.ENGAGED, "and cannot move")
+    _check_eq(f.activation.activate(y), ActivationController.Result.OK, "Y still can: the phase does not stall")
+    f.activation.end_activation()
+    f.activation.activate(b)
+    f.activation.end_activation()
+    _check_eq(f.tm.current_phase, Phase.SHOOTING, "Movement ends normally")
+    _free_restricted_fixture(f)
+
+
+func test_rounds_without_input_never_chain_unbounded() -> void:
+    # Every squad is locked in contact, so no activation phase has anything to
+    # do, and both procedures finish at once: each round needs no input.
+    var a := _squad_at(&"p1_a", P1, [Vector2(10.0, 10.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(11.0, 10.0)])
+    var battle := BattleState.new()
+    battle.add_squad(a)
+    battle.add_squad(x)
+    var tm := TurnManager.new()
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var tracker := EngagementTracker.new()
+    tracker.bind(tm)
+    activation.engagements = tracker
+    tm.register_procedure(Phase.ASSAULT, func(): tm.complete_procedure_phase(Phase.ASSAULT))
+    tm.register_procedure(Phase.CONSOLIDATION, func(): tm.complete_procedure_phase(Phase.CONSOLIDATION))
+    tm.start_game()
+    _check_eq(tm.turn_number, 2, "round 1 passes and round 2 begins in the same call")
+    _check_eq(tm.current_phase, Phase.CONSOLIDATION, "but round 2's end does not start round 3 in that call")
+    await process_frame
+    _check(tm.turn_number >= 3, "the next round starts on a later frame instead")
+    activation.free()
+    tm.free()
 

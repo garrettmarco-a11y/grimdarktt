@@ -19,13 +19,15 @@ const PLAYER_COLORS := {
 const NEUTRAL_COLOR := Color(0.6, 0.6, 0.6)
 const SELECTION_COLOR := Color(1.0, 0.86, 0.35)
 const ACTIVE_COLOR := Color(1.0, 1.0, 1.0)
+## Ring marking a squad held by its engagement this round.
+const ENGAGED_COLOR := Color(0.95, 0.35, 0.2)
 const SHAKEN_COLOR := Color(1.0, 0.65, 0.15)
 const BROKEN_COLOR := Color(0.95, 0.15, 0.15)
 ## Extra click margin around each base, in pixels.
 const CLICK_MARGIN := 2.0
 
 ## Activation display states, pushed in by SquadLayer.
-enum ActivationDisplay { READY, ACTIVE, SPENT }
+enum ActivationDisplay { READY, ACTIVE, SPENT, ENGAGED }
 
 ## Glide speed toward `target_position`, in pixels per second.
 @export var move_speed := 240.0
@@ -138,7 +140,7 @@ func _radius_of(i: int) -> float:
 
 func _draw() -> void:
     var color: Color = PLAYER_COLORS.get(get_player(), NEUTRAL_COLOR)
-    if activation_display == ActivationDisplay.SPENT:
+    if activation_display == ActivationDisplay.SPENT or activation_display == ActivationDisplay.ENGAGED:
         color = color.lerp(NEUTRAL_COLOR, 0.6).darkened(0.35)
     for i in _shown_offsets.size():
         var r := _radius_of(i)
@@ -150,6 +152,11 @@ func _draw() -> void:
     draw_circle(leader, maxf(radius - 4.0, 1.0), color.lightened(0.35), false, 2.0)
     if activation_display == ActivationDisplay.ACTIVE:
         draw_circle(leader, radius + 9.0, ACTIVE_COLOR, false, 2.0)
+    elif activation_display == ActivationDisplay.ENGAGED:
+        # Committed to an engagement: unavailable until the Assault phase.
+        for i in 8:
+            var from := TAU * i / 8.0
+            draw_arc(leader, radius + 9.0, from, from + TAU / 16.0, 4, ENGAGED_COLOR, 2.0)
     if selected:
         draw_circle(leader, radius + 5.0, SELECTION_COLOR, false, 3.0)
     if morale_status == SquadState.MoraleStatus.SHAKEN:

@@ -83,6 +83,8 @@ func refresh() -> void:
             hint_label.text = "Already activated this phase"
         ActivationController.Result.NOT_ELIGIBLE:
             hint_label.text = "Not eligible this phase"
+        ActivationController.Result.ENGAGED:
+            hint_label.text = "Engaged this round: fights in Assault"
         _:
             hint_label.text = ""
 

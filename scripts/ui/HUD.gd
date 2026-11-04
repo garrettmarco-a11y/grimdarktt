@@ -1,8 +1,8 @@
 extends CanvasLayer
 class_name HUD
 ## Displays game state. Reads from the turn manager, selection, activation,
-## movement, shooting, assault and morale controllers and the casualty
-## allocator through signals only.
+## movement, shooting, charge, engagement, consolidation and morale controllers
+## and the casualty allocator through signals only.
 
 @onready var phase_banner: PhaseBanner = $PhaseBanner
 @onready var squad_info_panel: SquadInfoPanel = $SquadInfoPanel

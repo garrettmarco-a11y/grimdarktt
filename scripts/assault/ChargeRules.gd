@@ -78,6 +78,17 @@ static func validate(charger: SquadState, target: SquadState, phase: TurnManager
     return Result.OK
 
 
+## Enemy squads `charger` could legally declare a charge against now: exactly
+## those validate() accepts (as the activated squad in the Charge phase).
+static func valid_targets(charger: SquadState, squads: Array, tracker: EngagementTracker) -> Array[SquadState]:
+    var targets: Array[SquadState] = []
+    for other in squads:
+        if other.get_player() != charger.get_player() \
+                and validate(charger, other, TurnManager.Phase.CHARGE, true, squads, tracker) == Result.OK:
+            targets.append(other)
+    return targets
+
+
 ## Most a charge by `squad` could ever reach: Movement + 6.
 static func max_charge_distance(squad: SquadState) -> float:
     return MovementRules.allowance_for(squad.data) + MAX_ROLL
