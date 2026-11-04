@@ -11,8 +11,10 @@ class_name ConsolidationController
 ##     its turn order; models in the mover's deterministic order.
 ##   - Each living model may move up to DISTANCE (fixed, not a share of
 ##     Movement), with difficult terrain ignored and impassable terrain, the
-##     board edge and every base blocking. A model already in base contact
-##     with an enemy model stays where it is.
+##     board edge and every base blocking. A model that was in base contact
+##     with an enemy model when the phase began stays where it is; which
+##     models those are is fixed once, before any squad moves, so contact made
+##     by an earlier squad's consolidation never stops a later model moving.
 ##   - The others head for the nearest living model of the squad's declared
 ##     attack target, if that squad is still on the battlefield; otherwise of
 ##     the nearest living enemy squad of the engagement (edge to edge, ties by
@@ -54,6 +56,14 @@ func bind(turn_manager: TurnManager, battle: BattleState, tracker: EngagementTra
 ## order). Returns the report.
 func consolidate(outcomes: Array) -> Array:
     var report := []
+    # Phase-start snapshot: the living models already in enemy contact.
+    var held_at_start := {}
+    var squads := _battle.get_squads()
+    for outcome in outcomes:
+        for squad in outcome.squads:
+            for model in squad.get_living_models():
+                if EngagementRules.model_in_enemy_contact(squad, model, squads):
+                    held_at_start[model] = true
     for outcome in outcomes:
         var enemies_of := func(squad: SquadState) -> Array:
             return outcome.squads.filter(func(s: SquadState) -> bool:
@@ -68,7 +78,7 @@ func consolidate(outcomes: Array) -> Array:
             var moving: Array[ModelState] = []
             var held := 0
             for model in squad.get_living_models():
-                if EngagementRules.model_in_enemy_contact(squad, model, _battle.get_squads()):
+                if held_at_start.has(model):
                     held += 1
                 else:
                     moving.append(model)

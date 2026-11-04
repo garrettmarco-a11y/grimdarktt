@@ -17,6 +17,14 @@ class_name ActivationController
 ##     e.g. by being charged; withdraw() then removes the squad's waiting
 ##     activation.
 ##   - Procedure phases (Assault, Consolidation): no squad activates.
+##   - A squad committed to an engagement this round (EngagementTracker) may
+##     not activate in Movement, Shooting or Charge for the rest of the round,
+##     even if it is no longer in base contact; it fights in Assault and
+##     consolidates as usual. Nor may a squad that is in base contact with an
+##     enemy right now (an ongoing engagement, e.g. from an earlier round):
+##     it cannot walk or shoot its way out. Both apply once `engagements` is
+##     bound. A waiting squad that becomes restricted mid-phase (committed by
+##     a charge, or contacted by a moving enemy) loses its activation.
 ##   With no eligible squads an activation phase passes straight away.
 
 signal activation_changed
@@ -24,7 +32,11 @@ signal activation_changed
 ## tests here. Emitted after activation_changed.
 signal squad_activated(state: SquadState)
 
-enum Result { OK, NO_SQUAD, NOT_IN_PHASE, ACTIVATION_IN_PROGRESS, WRONG_PLAYER, ALREADY_ACTIVATED, NOT_ELIGIBLE }
+enum Result { OK, NO_SQUAD, NOT_IN_PHASE, ACTIVATION_IN_PROGRESS, WRONG_PLAYER, ALREADY_ACTIVATED, NOT_ELIGIBLE, ENGAGED }
+
+## Phases in which a squad committed to an engagement may not activate.
+const ENGAGED_RESTRICTED_PHASES: Array[TurnManager.Phase] = [
+    TurnManager.Phase.MOVEMENT, TurnManager.Phase.SHOOTING, TurnManager.Phase.CHARGE]
 
 ## The squad currently activated, or null.
 var active_squad: SquadState = null
@@ -38,6 +50,14 @@ var locked := false:
 ## Decides Charge-phase eligibility: Callable(state: SquadState) -> bool.
 ## No squad is eligible while it is unset.
 var charge_rule := Callable()
+## The round-long engagement commitments; none restrict activation if null.
+var engagements: EngagementTracker:
+    set(value):
+        if engagements and engagements.engagements_changed.is_connected(_on_engagements_changed):
+            engagements.engagements_changed.disconnect(_on_engagements_changed)
+        engagements = value
+        if engagements:
+            engagements.engagements_changed.connect(_on_engagements_changed)
 
 var _battle: BattleState
 var _turn_manager: TurnManager
@@ -69,9 +89,22 @@ static func is_eligible(state: SquadState, phase: TurnManager.Phase) -> bool:
 func is_squad_eligible(state: SquadState, phase: TurnManager.Phase) -> bool:
     if _turn_manager and _turn_manager.is_procedure(phase):
         return false
+    if is_engaged_restricted(state, phase):
+        return false
     if phase == TurnManager.Phase.CHARGE:
         return charge_rule.is_valid() and charge_rule.call(state) and not _withdrawn.has(state.squad_id)
     return is_eligible(state, phase)
+
+
+## True if `phase` is one in which engaged squads may not activate and
+## `state` is engaged: committed to an engagement this round, or in base
+## contact with an enemy now. Only with `engagements` bound.
+func is_engaged_restricted(state: SquadState, phase: TurnManager.Phase) -> bool:
+    if engagements == null or phase not in ENGAGED_RESTRICTED_PHASES:
+        return false
+    if engagements.is_committed(state.squad_id):
+        return true
+    return _battle != null and ChargeRules.in_enemy_contact(state, _battle.get_squads())
 
 
 ## Removes the waiting activation of `state`, which has just become ineligible
@@ -127,6 +160,8 @@ func can_activate(state: SquadState) -> Result:
         return Result.ALREADY_ACTIVATED
     if state.get_player() != _turn_manager.active_player:
         return Result.WRONG_PLAYER
+    if is_engaged_restricted(state, _turn_manager.current_phase):
+        return Result.ENGAGED
     if not is_squad_eligible(state, _turn_manager.current_phase):
         return Result.NOT_ELIGIBLE
     return Result.OK
@@ -150,7 +185,13 @@ func end_activation() -> bool:
         return false
     if locked:
         return false
+    var phase := _turn_manager.current_phase
+    var turn := _turn_manager.turn_number
     var ended := _turn_manager.end_activation()
+    # The activation may have moved a squad into contact with a waiting enemy;
+    # only act if this is still the same phase (it may have ended meanwhile).
+    if _turn_manager.current_phase == phase and _turn_manager.turn_number == turn:
+        _withdraw_restricted()
     # TurnManager emits activation_ended before choosing the next player, so
     # report the change only once the hand-over is complete.
     activation_changed.emit()
@@ -188,6 +229,22 @@ func _on_phase_changed(phase: TurnManager.Phase, _turn: int) -> void:
     # May end the phase at once (e.g. Morale with no tests), which re-enters here.
     _turn_manager.begin_phase(counts[TurnManager.PLAYER_ONE], counts[TurnManager.PLAYER_TWO])
     activation_changed.emit()
+
+
+## A squad committed mid-phase (e.g. charged) can no longer act this phase.
+func _on_engagements_changed() -> void:
+    _withdraw_restricted()
+
+
+## Withdraws every waiting squad that has become engaged-restricted.
+func _withdraw_restricted() -> void:
+    if _turn_manager == null or _battle == null or engagements == null:
+        return
+    if _turn_manager.current_phase not in ENGAGED_RESTRICTED_PHASES:
+        return
+    for state in _battle.get_squads():
+        if _counted.has(state.squad_id) and is_engaged_restricted(state, _turn_manager.current_phase):
+            withdraw(state)
 
 
 func _on_squad_removed(state: SquadState) -> void:

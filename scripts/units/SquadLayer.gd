@@ -57,10 +57,13 @@ func show_selection(selected: SquadState) -> void:
 
 
 ## Marks `active` as activated and the squads in `spent` as already activated.
-func show_activation(active: SquadState, spent: Array[SquadState]) -> void:
+## Squads in `engaged` are shown as held by their engagement (unavailable).
+func show_activation(active: SquadState, spent: Array[SquadState], engaged: Array[SquadState] = []) -> void:
     for token in get_tokens():
         if token.state == active:
             token.activation_display = SquadToken.ActivationDisplay.ACTIVE
+        elif token.state in engaged:
+            token.activation_display = SquadToken.ActivationDisplay.ENGAGED
         elif token.state in spent:
             token.activation_display = SquadToken.ActivationDisplay.SPENT
         else:

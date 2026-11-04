@@ -5,14 +5,37 @@ class_name MovementOverlay
 ## along the path travelled), the line from where it began the turn, and a
 ## brief marker where an order was rejected.
 ##
+## In the Charge phase it instead shows the selected squad's maximum possible
+## charge reach, but only while that squad could still declare a charge
+## (ChargeRules.can_declare_any, and `charge_available`): around each model a
+## circle of M + 6 plus its base radius, so an enemy base whose edge falls
+## inside is within M + 6 edge to edge; and a ring on every model of each
+## enemy squad ChargeRules.validate would accept. It shows reach, not that a
+## charge will make contact: the D6 decides that.
+##
 ## Must be a direct child of a GameBoard. Reads SquadState; changes nothing.
 
 const RANGE_COLOR := Color(1.0, 0.86, 0.35, 0.10)
 const RANGE_EDGE_COLOR := Color(1.0, 0.86, 0.35, 0.45)
 const PATH_COLOR := Color(1.0, 0.86, 0.35, 0.8)
 const REJECT_COLOR := Color(1.0, 0.3, 0.25)
+const CHARGE_COLOR := Color(0.95, 0.45, 0.2, 0.07)
+const CHARGE_EDGE_COLOR := Color(0.95, 0.45, 0.2, 0.55)
+const CHARGE_TARGET_COLOR := Color(0.95, 0.45, 0.2, 0.95)
 ## Seconds a rejected-order marker stays visible.
 const REJECT_DURATION := 1.0
+
+## The current phase; the charge reach is shown only in the Charge phase.
+var phase := TurnManager.Phase.MOVEMENT:
+    set(value):
+        phase = value
+        queue_redraw()
+## Battle and round-long commitments, for charge reach and valid targets.
+var battle: BattleState
+var engagements: EngagementTracker
+## Callable(state: SquadState) -> bool: whether the squad can still declare a
+## charge this phase (activating now, or yet to activate). Always if unset.
+var charge_available := Callable()
 
 var _squad: SquadState
 var _orders_enabled := true
@@ -44,6 +67,27 @@ func show_rejected(board_point: Vector2) -> void:
     _reject_time_left = REJECT_DURATION
     set_process(true)
     queue_redraw()
+
+
+## True if the selected squad's maximum charge reach is being shown.
+func is_showing_charge_reach() -> bool:
+    if phase != TurnManager.Phase.CHARGE or _squad == null or battle == null:
+        return false
+    if not ChargeRules.can_declare_any(_squad, battle.get_squads(), engagements):
+        return false
+    return not charge_available.is_valid() or charge_available.call(_squad)
+
+
+## Radius, in board units, of the reach circle drawn around `model`.
+func charge_reach_radius(model: ModelState) -> float:
+    return ChargeRules.max_charge_distance(_squad) + model.get_base_radius()
+
+
+## Enemy squads highlighted as valid charge targets (empty unless shown).
+func charge_targets() -> Array[SquadState]:
+    if not is_showing_charge_reach():
+        return []
+    return ChargeRules.valid_targets(_squad, battle.get_squads(), engagements)
 
 
 func is_showing_rejection() -> bool:
@@ -79,6 +123,16 @@ func _draw() -> void:
         if start != current:
             draw_circle(start, 3.0, PATH_COLOR)
             draw_line(start, current, PATH_COLOR, 2.0)
+    if is_showing_charge_reach():
+        for model in _squad.get_living_models():
+            var centre := board.units_to_pixels(model.position)
+            var reach := charge_reach_radius(model) * board.pixels_per_unit
+            draw_circle(centre, reach, CHARGE_COLOR)
+            draw_circle(centre, reach, CHARGE_EDGE_COLOR, false, 1.5)
+        for target in charge_targets():
+            for model in target.get_living_models():
+                draw_circle(board.units_to_pixels(model.position),
+                    (model.get_base_radius() * board.pixels_per_unit) + 4.0, CHARGE_TARGET_COLOR, false, 2.0)
     if _reject_time_left > 0.0:
         var p := board.units_to_pixels(_reject_point)
         var color := REJECT_COLOR

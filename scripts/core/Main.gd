@@ -14,6 +14,8 @@ var battle := BattleState.new()
 var terrain: TerrainMap
 ## Why the starting squad layout was rejected; empty if it is legal.
 var layout_errors := PackedStringArray()
+## Required procedure phases left without a procedure; empty when complete.
+var procedure_errors := PackedStringArray()
 ## Shared by shooting and assault for the defender's casualty allocation.
 var casualties := CasualtyAllocator.new()
 ## Round-long engagement commitments, reset at the start of every round.
@@ -66,6 +68,7 @@ func _ready() -> void:
     morale.bind(battle, turn_manager, activation, game_board.board_size)
     morale.terrain = terrain
     engagements.bind(turn_manager)
+    activation.engagements = engagements
     charge.name = "ChargeController"
     add_child(charge)
     charge.bind(turn_manager, activation, battle, engagements, game_board.board_size)
@@ -97,12 +100,30 @@ func _ready() -> void:
     selection.selection_changed.connect(squad_layer.show_selection)
     selection.selection_changed.connect(movement_overlay.show_squad)
     movement.move_rejected.connect(_on_move_rejected)
+    movement_overlay.battle = battle
+    movement_overlay.engagements = engagements
+    movement_overlay.charge_available = _may_still_charge
     turn_manager.phase_changed.connect(_on_phase_changed)
     activation.activation_changed.connect(_on_activation_changed)
-    if layout_errors.is_empty():
-        turn_manager.start_game()
-    else:
+    # Assault and Consolidation are required procedure phases: never start a
+    # game in which either would silently be skipped.
+    procedure_errors = required_procedure_errors(turn_manager)
+    for error in procedure_errors:
+        push_error(error)
+    if not layout_errors.is_empty():
         hud.show_setup_error("Invalid starting layout: %s" % layout_errors[0])
+    elif not procedure_errors.is_empty():
+        hud.show_setup_error(procedure_errors[0])
+    else:
+        turn_manager.start_game()
+
+
+## One message per procedure phase of `tm` left without a procedure.
+static func required_procedure_errors(tm: TurnManager) -> PackedStringArray:
+    var errors := PackedStringArray()
+    for phase in tm.missing_procedures():
+        errors.append("Game setup incomplete: no procedure registered for the %s phase" % TurnManager.phase_to_string(phase))
+    return errors
 
 
 func _on_destination_clicked(board_point: Vector2) -> void:
@@ -132,7 +153,21 @@ func _on_move_rejected(_state: SquadState, destination: Vector2, _result: Moveme
 
 func _on_phase_changed(phase: TurnManager.Phase, _turn: int) -> void:
     movement_overlay.set_orders_enabled(phase == TurnManager.Phase.MOVEMENT)
+    movement_overlay.phase = phase
+
+
+## Whether `state` can still declare a charge this phase: it is the squad
+## activating now, or it has yet to activate and is eligible.
+func _may_still_charge(state: SquadState) -> bool:
+    if activation.is_active_squad(state):
+        return true
+    return not activation.has_activated(state) and activation.is_squad_eligible(state, TurnManager.Phase.CHARGE)
 
 
 func _on_activation_changed() -> void:
-    squad_layer.show_activation(activation.active_squad, activation.get_activated_squads())
+    var engaged: Array[SquadState] = []
+    for state in battle.get_squads():
+        if activation.is_engaged_restricted(state, turn_manager.current_phase):
+            engaged.append(state)
+    squad_layer.show_activation(activation.active_squad, activation.get_activated_squads(), engaged)
+    movement_overlay.queue_redraw()

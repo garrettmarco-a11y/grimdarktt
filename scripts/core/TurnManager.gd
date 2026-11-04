@@ -19,17 +19,27 @@ class_name TurnManager
 ## kind of phase can end the other early.
 ##
 ## Rules (approved by the project lead):
+##   - The round is Movement, Shooting, Morale, Charge (alternating squad
+##     activations), then Assault and Consolidation (procedure phases). The
+##     turn ends after Consolidation.
 ##   - Priority is set once per game turn, at the start of the Movement phase:
 ##     the player with more activations gets it, a tie keeps the previous
-##     priority. It then holds for Shooting, Assault and Morale.
+##     priority. It then holds for every later phase of the turn (procedures
+##     use it too, e.g. to order Assault declarations).
 ##   - Eligible activation counts are supplied by the caller at each phase start;
 ##     the manager does not decide which squads are eligible.
-##   - Within every phase, Morale included, activations alternate starting with
-##     the priority player; a player with 0 remaining activations is skipped.
+##   - Within every activation phase (Movement, Shooting, Morale, Charge),
+##     activations alternate starting with the priority player; a player with
+##     0 remaining activations is skipped.
 ##   - A squad lost mid-phase is removed with remove_squad_activation(). The
 ##     squad currently activating is never removed this way; its activation
 ##     simply ends with end_activation().
 ##   - A phase ends when both players have 0 remaining activations.
+##   - Phases that need no input end at once, so several can pass in one call.
+##     At most one new round starts within such a chain: a further round's
+##     start is deferred to the next frame, so a stretch of rounds in which
+##     nobody can act (e.g. every squad locked in combat with no wound landing)
+##     never piles up on the call stack.
 
 signal phase_changed(phase: Phase, turn: int)
 signal phase_started(phase: Phase, turn: int, priority_player: int)
@@ -60,6 +70,9 @@ var state: State = State.NOT_STARTED
 var _remaining := {PLAYER_ONE: 0, PLAYER_TWO: 0}
 ## Phase -> Callable started when that procedure phase begins.
 var _procedures := {}
+## Nesting of _end_phase calls, and rounds begun within the current chain.
+var _chain_depth := 0
+var _rounds_in_chain := 0
 
 
 static func phase_to_string(phase: Phase) -> String:
@@ -97,6 +110,17 @@ func register_procedure(phase: Phase, procedure: Callable) -> void:
     _procedures[phase] = procedure
 
 
+## Procedure phases with no registered procedure. Such a phase would end at
+## once with nothing done: acceptable in isolated tests, an error in the game
+## (see Main.required_procedure_errors).
+func missing_procedures() -> Array[Phase]:
+    var missing: Array[Phase] = []
+    for phase in PROCEDURE_PHASES:
+        if not _procedures.has(phase):
+            missing.append(phase)
+    return missing
+
+
 ## Ends procedure phase `phase` once its procedure has finished. Refused unless
 ## that procedure phase is the one in progress.
 func complete_procedure_phase(phase: Phase) -> bool:
@@ -120,7 +144,7 @@ func start_game() -> void:
     state = State.AWAITING_PHASE_START
     turn_started.emit(turn_number)
     phase_changed.emit(current_phase, turn_number)
-    _begin_procedure_if_any()
+    _begin_procedure_if_any(Phase.MOVEMENT, turn_number)
 
 
 ## Starts the current phase with each player's eligible squad activations.
@@ -222,28 +246,62 @@ func get_remaining_activations(player: int) -> int:
 
 
 func _end_phase() -> void:
+    _chain_depth += 1
     var ended_phase := current_phase
     active_player = NO_PLAYER
     state = State.AWAITING_PHASE_START
     phase_ended.emit(ended_phase, turn_number)
 
-    if ended_phase == LAST_PHASE:
-        turn_number += 1
-        current_phase = Phase.MOVEMENT
-        turn_started.emit(turn_number)
+    if ended_phase == LAST_PHASE and _rounds_in_chain >= 1:
+        # A round already began in this chain: start the next one on the next
+        # frame. (Not call_deferred: a deferred call queued while deferred
+        # calls are being flushed runs in the same flush.)
+        var tree := Engine.get_main_loop() as SceneTree
+        if tree and not tree.process_frame.is_connected(_start_next_round):
+            tree.process_frame.connect(_start_next_round, CONNECT_ONE_SHOT)
+    elif ended_phase == LAST_PHASE:
+        _rounds_in_chain += 1
+        _begin_round()
     else:
         current_phase = (ended_phase + 1) as Phase
+        var entered := current_phase
+        var turn := turn_number
+        phase_changed.emit(current_phase, turn_number)
+        _begin_procedure_if_any(entered, turn)
+    _chain_depth -= 1
+    if _chain_depth == 0:
+        _rounds_in_chain = 0
+
+
+func _start_next_round() -> void:
+    if state != State.AWAITING_PHASE_START or current_phase != LAST_PHASE:
+        return
+    _chain_depth += 1
+    _rounds_in_chain += 1
+    _begin_round()
+    _chain_depth -= 1
+    if _chain_depth == 0:
+        _rounds_in_chain = 0
+
+
+func _begin_round() -> void:
+    turn_number += 1
+    current_phase = Phase.MOVEMENT
+    var turn := turn_number
+    turn_started.emit(turn_number)
     phase_changed.emit(current_phase, turn_number)
-    _begin_procedure_if_any()
+    _begin_procedure_if_any(Phase.MOVEMENT, turn)
 
 
-## Enters the current phase's procedure if it is a procedure phase whose start
-## nobody has already handled.
-func _begin_procedure_if_any() -> void:
+## Enters the procedure of `phase` (just entered in `turn`) if it is a
+## procedure phase whose start nobody has already handled. A caller resuming
+## after a nested chain of phase changes passes the phase it entered, so it
+## never starts a later phase's procedure by mistake.
+func _begin_procedure_if_any(phase: Phase, turn: int) -> void:
+    if current_phase != phase or turn_number != turn:
+        return
     if not is_procedure(current_phase) or state != State.AWAITING_PHASE_START:
         return
-    var phase := current_phase
-    var turn := turn_number
     state = State.PROCEDURE_IN_PROGRESS
     active_player = NO_PLAYER
     phase_started.emit(phase, turn, priority_player)
