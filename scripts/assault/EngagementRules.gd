@@ -34,6 +34,24 @@ static func contact_pairs(squads: Array) -> Array:
     return pairs
 
 
+## Squad ids of every squad currently participating in an active engagement:
+## a member of a connected group of squads linked by enemy base contact
+## (group() from current contact only, never round-long commitment). Every
+## squad of a connected engagement is included, whichever of its models touch
+## whom.
+static func engaged_squad_ids(squads: Array) -> Dictionary:
+    var engaged := {}
+    for found in group(squads):
+        for squad in found.squads:
+            engaged[squad.squad_id] = true
+    return engaged
+
+
+## True if `squad` is currently participating in an active engagement.
+static func is_in_active_engagement(squad: SquadState, squads: Array) -> bool:
+    return engaged_squad_ids(squads).has(squad.squad_id)
+
+
 ## True if any living model of `a` is in base contact with one of `b`'s and
 ## they are enemies.
 static func squads_in_contact(a: SquadState, b: SquadState) -> bool:

@@ -5,7 +5,10 @@ class_name ShootingRules
 ##
 ## Rules (initial, per the project lead's brief):
 ##   - Only the activated squad may shoot, only in the Shooting phase, and only
-##     at an enemy squad.
+##     at an enemy squad that is not currently participating in an active
+##     engagement (EngagementRules: connected enemy base contact now, not
+##     round-long commitment). Friendly squads are never targets. There is no
+##     firing into a melee, no hit redirection and no random target.
 ##   - Each model is checked on its own; an ineligible model adds no shots but
 ##     never stops the rest of the squad firing.
 ##   - Range is measured from the firing model to the nearest target model; a
@@ -18,14 +21,17 @@ class_name ShootingRules
 ##     target squad is in heavy cover.
 ##   - Morale may forbid shooting this turn (MoraleRules.may_attack).
 
-enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING, MORALE_RESTRICTED, NO_VISIBLE_TARGET }
+enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING, MORALE_RESTRICTED, NO_VISIBLE_TARGET,
+    ENGAGED_TARGET }
 
 ## Tolerance for range comparisons, in board units.
 const EPSILON := 0.001
 
 
+## `squads` are the squads on the battlefield, used to find current
+## engagements; ShootingController always passes them.
 static func validate_order(firing: SquadState, target: SquadState, phase: TurnManager.Phase,
-        firing_is_activated: bool) -> OrderResult:
+        firing_is_activated: bool, squads: Array = []) -> OrderResult:
     if firing == null:
         return OrderResult.NO_SQUAD
     if target == null:
@@ -38,6 +44,8 @@ static func validate_order(firing: SquadState, target: SquadState, phase: TurnMa
         return OrderResult.MORALE_RESTRICTED
     if target.get_player() == firing.get_player():
         return OrderResult.OWN_SQUAD
+    if EngagementRules.is_in_active_engagement(target, squads):
+        return OrderResult.ENGAGED_TARGET
     return OrderResult.OK
 
 

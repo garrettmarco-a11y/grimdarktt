@@ -103,6 +103,7 @@ func _ready() -> void:
     movement_overlay.battle = battle
     movement_overlay.engagements = engagements
     movement_overlay.charge_available = _may_still_charge
+    movement_overlay.shoot_targets = _shootable_by
     turn_manager.phase_changed.connect(_on_phase_changed)
     activation.activation_changed.connect(_on_activation_changed)
     # Assault and Consolidation are required procedure phases: never start a
@@ -154,6 +155,14 @@ func _on_move_rejected(_state: SquadState, destination: Vector2, _result: Moveme
 func _on_phase_changed(phase: TurnManager.Phase, _turn: int) -> void:
     movement_overlay.set_orders_enabled(phase == TurnManager.Phase.MOVEMENT)
     movement_overlay.phase = phase
+
+
+## The squads `state` may shoot at now: only while it is activated to shoot.
+func _shootable_by(state: SquadState) -> Array[SquadState]:
+    var none: Array[SquadState] = []
+    if turn_manager.current_phase != TurnManager.Phase.SHOOTING or not activation.is_active_squad(state):
+        return none
+    return shooting.valid_targets(state)
 
 
 ## Whether `state` can still declare a charge this phase: it is the squad

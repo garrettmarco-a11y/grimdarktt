@@ -13,6 +13,11 @@ class_name MovementOverlay
 ## enemy squad ChargeRules.validate would accept. It shows reach, not that a
 ## charge will make contact: the D6 decides that.
 ##
+## In the Shooting phase, while the selected squad is the one activated to
+## shoot, it rings every model of each enemy squad it may fire at
+## (`shoot_targets`, i.e. ShootingController.valid_targets): never a friendly
+## squad, nor an enemy squad engaged in combat.
+##
 ## Must be a direct child of a GameBoard. Reads SquadState; changes nothing.
 
 const RANGE_COLOR := Color(1.0, 0.86, 0.35, 0.10)
@@ -22,6 +27,7 @@ const REJECT_COLOR := Color(1.0, 0.3, 0.25)
 const CHARGE_COLOR := Color(0.95, 0.45, 0.2, 0.07)
 const CHARGE_EDGE_COLOR := Color(0.95, 0.45, 0.2, 0.55)
 const CHARGE_TARGET_COLOR := Color(0.95, 0.45, 0.2, 0.95)
+const SHOOT_TARGET_COLOR := Color(0.45, 0.8, 1.0, 0.95)
 ## Seconds a rejected-order marker stays visible.
 const REJECT_DURATION := 1.0
 
@@ -36,6 +42,9 @@ var engagements: EngagementTracker
 ## Callable(state: SquadState) -> bool: whether the squad can still declare a
 ## charge this phase (activating now, or yet to activate). Always if unset.
 var charge_available := Callable()
+## Callable(state: SquadState) -> Array[SquadState]: the squads `state` may
+## shoot at now (empty unless it is activated to shoot). None if unset.
+var shoot_targets := Callable()
 
 var _squad: SquadState
 var _orders_enabled := true
@@ -90,6 +99,15 @@ func charge_targets() -> Array[SquadState]:
     return ChargeRules.valid_targets(_squad, battle.get_squads(), engagements)
 
 
+## Enemy squads ringed as valid shooting targets (empty outside Shooting).
+func shooting_targets() -> Array[SquadState]:
+    var targets: Array[SquadState] = []
+    if phase != TurnManager.Phase.SHOOTING or _squad == null or not shoot_targets.is_valid():
+        return targets
+    targets.assign(shoot_targets.call(_squad))
+    return targets
+
+
 func is_showing_rejection() -> bool:
     return _reject_time_left > 0.0
 
@@ -133,6 +151,10 @@ func _draw() -> void:
             for model in target.get_living_models():
                 draw_circle(board.units_to_pixels(model.position),
                     (model.get_base_radius() * board.pixels_per_unit) + 4.0, CHARGE_TARGET_COLOR, false, 2.0)
+    for target in shooting_targets():
+        for model in target.get_living_models():
+            draw_circle(board.units_to_pixels(model.position),
+                (model.get_base_radius() * board.pixels_per_unit) + 4.0, SHOOT_TARGET_COLOR, false, 2.0)
     if _reject_time_left > 0.0:
         var p := board.units_to_pixels(_reject_point)
         var color := REJECT_COLOR

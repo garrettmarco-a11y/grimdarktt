@@ -19,12 +19,14 @@ var allocator: CasualtyAllocator
 
 var _turn_manager: TurnManager
 var _activation: ActivationController
+var _battle: BattleState
 
 
 func bind(turn_manager: TurnManager, activation: ActivationController, battle: BattleState,
         casualty_allocator: CasualtyAllocator = null) -> void:
     _turn_manager = turn_manager
     _activation = activation
+    _battle = battle
     allocator = casualty_allocator
     if allocator == null:
         allocator = CasualtyAllocator.new()
@@ -59,7 +61,7 @@ func get_wounds_left() -> int:
 func order_shot(firing: SquadState, target: SquadState) -> ShootingRules.OrderResult:
     var result := ShootingRules.OrderResult.ALLOCATION_PENDING if allocator.is_pending() else \
         ShootingRules.validate_order(firing, target, _turn_manager.current_phase,
-            _activation.is_active_squad(firing))
+            _activation.is_active_squad(firing), _squads())
     if result == ShootingRules.OrderResult.OK and not ShootingRules.has_visible_target(firing, target, line_of_sight):
         result = ShootingRules.OrderResult.NO_VISIBLE_TARGET
     if result != ShootingRules.OrderResult.OK:
@@ -69,6 +71,25 @@ func order_shot(firing: SquadState, target: SquadState) -> ShootingRules.OrderRe
     DamageRules.resolve_wounds_and_saves(outcome, dice)
     allocator.begin(outcome)
     return result
+
+
+## Enemy squads `firing` may shoot at now, as the activated squad: those
+## order_shot would accept (not friendly, not engaged, visible to a firing
+## model). For target display; refuses nothing itself.
+func valid_targets(firing: SquadState) -> Array[SquadState]:
+    var targets: Array[SquadState] = []
+    if firing == null or _battle == null:
+        return targets
+    var squads := _squads()
+    for target in squads:
+        if ShootingRules.validate_order(firing, target, TurnManager.Phase.SHOOTING, true, squads) == ShootingRules.OrderResult.OK \
+                and ShootingRules.has_visible_target(firing, target, line_of_sight):
+            targets.append(target)
+    return targets
+
+
+func _squads() -> Array:
+    return _battle.get_squads() if _battle else []
 
 
 ## The defender allocates one pending unsaved wound to model `model_id`.
