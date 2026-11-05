@@ -4776,6 +4776,13 @@ func test_charge_in_main_scene() -> void:
     var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
     raider.board_position = Vector2(21.0, 16.0)
     main.charge.dice = ScriptedDice.new([6])
+    # Every dice source is scripted. The Assault strikes leave an unsaved wound
+    # for Player 1 to allocate, so the procedure waits for that input. With
+    # random strike dice the round could instead finish in the same call and
+    # the next round re-fight the engagement (see the test after this one).
+    main.engagement.dice = ScriptedDice.new([6, 4, 3, 1, 4, 1, 6, 6, 6, 6, 2, 4, 2, 5, 2])
+    main.morale.dice = ScriptedDice.new([])
+    main.shooting.dice = ScriptedDice.new([])
     for i in 2:
         _complete_phase(main.activation, main.battle, main.turn_manager)
     _check_eq(main.turn_manager.current_phase, Phase.CHARGE, "Charge phase")
@@ -4792,6 +4799,59 @@ func test_charge_in_main_scene() -> void:
     _check(main.charge.last_result.succeeded and reports[0].contains("engaged"), "a successful charge")
     _check_eq(started, [[&"p1_line_squad", &"p2_raider_squad"]],
         "the charged Raiders lose their activation, so the Assault procedure starts at once with the charge's engagement")
+    _check_eq([main.turn_manager.turn_number, main.turn_manager.current_phase], [1, Phase.ASSAULT],
+        "still round 1's Assault")
+    _check(main.casualties.is_pending(), "waiting for Player 1 to allocate the Raiders' unsaved wounds")
+    main.queue_free()
+    await process_frame
+
+
+## Regression for the formerly intermittent failure of test_charge_in_main_scene.
+## If round 1's Assault leaves no unsaved wound (nothing waits for input) and
+## the losing squad passes its assault-loss test, both squads stay in contact.
+## Round 1 then ends in the same call, and round 2 begins at once (TurnManager
+## allows one new round per synchronous chain). Both players' only squads are
+## engaged, so round 2's activation phases have nothing to do and its Assault
+## fights the ongoing engagement again. That is correct play, not a duplicate:
+## two engagement_started events, one per round.
+func test_charge_without_assault_casualties_fights_again_next_round() -> void:
+    var main: Node = await _load_main()
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    raider.board_position = Vector2(21.0, 16.0)
+    main.charge.dice = ScriptedDice.new([6])
+    # Round 1: seven strike rolls, no unsaved wound on either side. Round 2:
+    # thirteen strike rolls, leaving unsaved wounds to allocate.
+    main.engagement.dice = ScriptedDice.new([2, 3, 1, 3, 3, 3, 1, 3, 6, 1, 5, 5, 6, 3, 4, 6, 1, 3, 6, 2])
+    # Round 1's assault-loss test: 1 + 4 = 5, passed.
+    main.morale.dice = ScriptedDice.new([1, 4])
+    main.shooting.dice = ScriptedDice.new([])
+    for i in 2:
+        _complete_phase(main.activation, main.battle, main.turn_manager)
+    main.activation.activate(line)
+    var started := []
+    var unsaved_by_round := {}
+    var loss_tests := []
+    main.engagement.engagement_started.connect(func(_e, squads):
+        started.append([main.turn_manager.turn_number, squads.map(func(s): return s.squad_id)]))
+    main.engagement.strikes_rolled.connect(func(_e, results: Array[CombatResult]):
+        var turn: int = main.turn_manager.turn_number
+        for r in results:
+            unsaved_by_round[turn] = unsaved_by_round.get(turn, 0) + r.get_unsaved_wounds())
+    main.engagement.engagement_resolved.connect(func(outcome: EngagementOutcome):
+        for t in outcome.loss_tests:
+            loss_tests.append([main.turn_manager.turn_number, t.squad.squad_id, t.passed]))
+    main._on_squad_right_clicked(raider, raider.board_position)
+    _check(main.charge.last_result.succeeded, "the charge succeeds")
+    _check_eq(unsaved_by_round.get(1, -1), 0, "round 1: no unsaved wound, so nothing waits for allocation")
+    _check_eq(loss_tests.size(), 1, "round 1's loser takes one assault-loss test")
+    _check(not loss_tests.is_empty() and loss_tests[0][0] == 1 and loss_tests[0][2], "and passes it: %s" % [loss_tests])
+    _check(EngagementRules.squads_in_contact(line, raider), "so the squads stay in contact")
+    _check_eq(started, [[1, [&"p1_line_squad", &"p2_raider_squad"]], [2, [&"p1_line_squad", &"p2_raider_squad"]]],
+        "the engagement is fought in round 1, then again as an ongoing engagement in round 2")
+    _check_eq([main.turn_manager.turn_number, main.turn_manager.current_phase], [2, Phase.ASSAULT],
+        "round 2's Assault, and no further round chained in the same call")
+    _check(unsaved_by_round.get(2, 0) > 0 and main.casualties.is_pending(), "round 2 waits for wound allocation")
     main.queue_free()
     await process_frame
 
