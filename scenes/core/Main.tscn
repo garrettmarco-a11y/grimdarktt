@@ -1,4 +1,4 @@
-[gd_scene load_steps=29 format=3]
+[gd_scene load_steps=34 format=3]
 
 [ext_resource type="Script" path="res://scripts/core/Main.gd" id="1_main"]
 [ext_resource type="PackedScene" path="res://scenes/core/GameBoard.tscn" id="2_board"]
@@ -21,6 +21,8 @@
 [ext_resource type="Resource" path="res://data/terrain/mud_flats.tres" id="t_mud"]
 [ext_resource type="Resource" path="res://data/terrain/wall.tres" id="t_wall"]
 [ext_resource type="Resource" path="res://data/terrain/crater.tres" id="t_crater"]
+[ext_resource type="Script" path="res://scripts/objectives/ObjectiveSetup.gd" id="18_objective_setup"]
+[ext_resource type="Script" path="res://scripts/objectives/ObjectiveLayer.gd" id="19_objective_layer"]
 
 [sub_resource type="Resource" id="Resource_p1_setup"]
 script = ExtResource("6_setup")
@@ -62,16 +64,41 @@ piece = ExtResource("t_crater")
 position = Vector2(9, 26.5)
 rotation_degrees = 0.0
 
+[sub_resource type="Resource" id="Resource_objective_a"]
+script = ExtResource("18_objective_setup")
+objective_id = &"objective_a"
+display_name = "A"
+position = Vector2(16, 24)
+control_radius = 3.0
+
+[sub_resource type="Resource" id="Resource_objective_b"]
+script = ExtResource("18_objective_setup")
+objective_id = &"objective_b"
+display_name = "B"
+position = Vector2(24, 16)
+control_radius = 3.0
+
+[sub_resource type="Resource" id="Resource_objective_c"]
+script = ExtResource("18_objective_setup")
+objective_id = &"objective_c"
+display_name = "C"
+position = Vector2(32, 24)
+control_radius = 3.0
+
 [node name="Main" type="Node"]
 script = ExtResource("1_main")
 squad_setups = Array[ExtResource("6_setup")]([SubResource("Resource_p1_setup"), SubResource("Resource_p2_setup")])
 terrain_setups = Array[ExtResource("16_terrain_setup")]([SubResource("Resource_terrain_scrub"), SubResource("Resource_terrain_ruins"), SubResource("Resource_terrain_mud"), SubResource("Resource_terrain_wall"), SubResource("Resource_terrain_crater")])
+objective_setups = Array[ExtResource("18_objective_setup")]([SubResource("Resource_objective_a"), SubResource("Resource_objective_b"), SubResource("Resource_objective_c")])
 
 [node name="GameBoard" parent="." instance=ExtResource("2_board")]
 position = Vector2(160, 64)
 
 [node name="TerrainLayer" type="Node2D" parent="GameBoard"]
 script = ExtResource("17_layer")
+
+[node name="ObjectiveLayer" type="Node2D" parent="GameBoard"]
+script = ExtResource("19_objective_layer")
 
 [node name="MovementOverlay" type="Node2D" parent="GameBoard"]
 script = ExtResource("10_overlay")

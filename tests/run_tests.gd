@@ -42,6 +42,7 @@ const EXPECTED_ERRORS := {
     "test_required_procedures_are_checked": 1,
     "test_validate_order_with_missing_or_inconsistent_battlefield_fails_explicitly": 4,
     "test_unbound_shooting_controller_cannot_bypass_engagement": 1,
+    "test_invalid_objective_setup_rejected_in_main": 1,
 }
 
 var _failures: Array[String] = []
@@ -6348,3 +6349,281 @@ func test_valid_targets_and_order_shot_agree() -> void:
     _check_eq(f.shooting.order_shot(s, e), ShootingRules.OrderResult.OK, "an offered target is accepted")
     _check(f.activation.has_activated(s), "and the shot resolves")
     _free_shooting_fixture(f)
+
+
+# --- Task 2.5.1: fixed objective foundations ---
+
+const OBJECTIVE_BOARD := Vector2(48.0, 32.0)
+
+
+## An objective setup for tests. Temporary fixture data.
+func _objective(objective_id: StringName, position: Vector2, radius := 3.0, display_name := "") -> ObjectiveSetup:
+    var setup := ObjectiveSetup.new()
+    setup.objective_id = objective_id
+    setup.display_name = display_name if display_name != "" else String(objective_id)
+    setup.position = position
+    setup.control_radius = radius
+    return setup
+
+
+func _objectives(list: Array) -> Array[ObjectiveSetup]:
+    var typed: Array[ObjectiveSetup] = []
+    typed.assign(list)
+    return typed
+
+
+func _battle_of(squads: Array) -> BattleState:
+    var battle := BattleState.new()
+    for squad in squads:
+        battle.add_squad(squad)
+    return battle
+
+
+func _status(objective: ObjectiveSetup, battle: BattleState) -> Array:
+    var status := ObjectiveRules.status_of(objective, battle)
+    return [status.control, status.player]
+
+
+func test_objective_placement_valid() -> void:
+    var setups := _objectives([_objective(&"a", Vector2(16.0, 24.0)), _objective(&"b", Vector2(24.0, 16.0)),
+        _objective(&"c", Vector2(32.0, 24.0), 2.5)])
+    _check_eq(ObjectiveRules.placement_errors(setups, OBJECTIVE_BOARD), PackedStringArray(), "a valid set is accepted")
+    _check_eq(ObjectiveRules.placement_errors(_objectives([]), OBJECTIVE_BOARD), PackedStringArray(), "no objectives is valid")
+    _check_eq(ObjectiveSetup.new().control_radius, 3.0, "the default control radius is 3.0")
+
+
+func test_objective_terrain_under_centre_permitted() -> void:
+    # A footprint with heavy cover, difficult ground and a line-of-sight
+    # blocker all under one objective's centre; impassable terrain only nearby.
+    var area := _rect_poly(8.0, 8.0, 14.0, 14.0)
+    var wall := _rect_poly(14.5, 10.0, 15.5, 12.0)
+    var terrain := _terrain([_piece(area, area, TerrainPiece.Cover.HEAVY, true), _piece(PackedVector2Array(),
+        PackedVector2Array(), TerrainPiece.Cover.NONE, false, wall)])
+    var on_terrain := _objective(&"t", Vector2(11.0, 11.0))
+    _check_eq(ObjectiveRules.placement_errors(_objectives([on_terrain]), OBJECTIVE_BOARD, terrain), PackedStringArray(),
+        "footprint, cover, difficult ground and LOS blocker under the centre are allowed")
+    var near_wall := _objective(&"w", Vector2(13.0, 11.0))
+    _check_eq(ObjectiveRules.placement_errors(_objectives([near_wall]), OBJECTIVE_BOARD, terrain), PackedStringArray(),
+        "the circle may overlap impassable terrain: only the centre is restricted")
+
+
+func test_objective_ids_must_be_present_and_unique() -> void:
+    var errors := ObjectiveRules.placement_errors(_objectives([_objective(&"", Vector2(10.0, 10.0))]), OBJECTIVE_BOARD)
+    _check_eq(errors.size(), 1, "empty id refused: %s" % [errors])
+    _check(errors.size() == 1 and errors[0].contains("has no id"), "and says so")
+    errors = ObjectiveRules.placement_errors(_objectives([_objective(&"a", Vector2(10.0, 10.0)),
+        _objective(&"b", Vector2(20.0, 10.0)), _objective(&"a", Vector2(30.0, 10.0))]), OBJECTIVE_BOARD)
+    _check_eq(errors.size(), 1, "duplicate id refused: %s" % [errors])
+    _check(errors.size() == 1 and errors[0].contains("duplicates the id of objective setup #0"), "naming the first")
+    var with_null: Array[ObjectiveSetup] = [_objective(&"a", Vector2(10.0, 10.0)), null]
+    _check_eq(ObjectiveRules.placement_errors(with_null, OBJECTIVE_BOARD).size(), 1, "an empty setup entry refused")
+
+
+func test_objective_radius_must_be_valid() -> void:
+    for radius in [0.0, -1.0, INF, NAN]:
+        var errors := ObjectiveRules.placement_errors(_objectives([_objective(&"a", Vector2(24.0, 16.0), radius)]),
+            OBJECTIVE_BOARD)
+        _check_eq(errors.size(), 1, "radius %s refused: %s" % [radius, errors])
+        _check(errors.size() == 1 and errors[0].contains("invalid control radius"), "radius %s: reason given" % radius)
+
+
+func test_objective_circle_must_stay_on_board() -> void:
+    for position in [Vector2(3.0, 16.0), Vector2(45.0, 16.0), Vector2(24.0, 3.0), Vector2(24.0, 29.0), Vector2(3.0, 3.0)]:
+        _check_eq(ObjectiveRules.placement_errors(_objectives([_objective(&"a", position)]), OBJECTIVE_BOARD),
+            PackedStringArray(), "circle touching the edge at %s is on the battlefield" % position)
+    for position in [Vector2(2.99, 16.0), Vector2(45.01, 16.0), Vector2(24.0, 2.99), Vector2(24.0, 29.01),
+            Vector2(-5.0, 16.0)]:
+        var errors := ObjectiveRules.placement_errors(_objectives([_objective(&"a", position)]), OBJECTIVE_BOARD)
+        _check(errors.size() == 1 and errors[0].contains("not entirely on the battlefield"),
+            "circle crossing the edge at %s refused: %s" % [position, errors])
+
+
+func test_objective_centre_not_in_impassable_terrain() -> void:
+    var wall := _rect_poly(20.0, 10.0, 28.0, 12.0)
+    var terrain := _terrain([_piece(PackedVector2Array(), PackedVector2Array(), TerrainPiece.Cover.NONE, false, wall)])
+    for position in [Vector2(24.0, 11.0), Vector2(24.0, 12.0), Vector2(20.0, 10.0)]:
+        var errors := ObjectiveRules.placement_errors(_objectives([_objective(&"a", position)]), OBJECTIVE_BOARD, terrain)
+        _check(errors.size() == 1 and errors[0].contains("inside impassable terrain"),
+            "centre at %s (inside or on the boundary) refused: %s" % [position, errors])
+    _check_eq(ObjectiveRules.placement_errors(_objectives([_objective(&"a", Vector2(24.0, 12.01))]), OBJECTIVE_BOARD,
+        terrain), PackedStringArray(), "centre just outside is allowed")
+
+
+func test_objective_circles_overlap_rejected_tangent_accepted() -> void:
+    _check_eq(ObjectiveRules.placement_errors(_objectives([_objective(&"a", Vector2(10.0, 10.0)),
+        _objective(&"b", Vector2(16.0, 10.0))]), OBJECTIVE_BOARD), PackedStringArray(), "tangent circles accepted")
+    _check_eq(ObjectiveRules.placement_errors(_objectives([_objective(&"a", Vector2(10.0, 10.0)),
+        _objective(&"b", Vector2(10.0, 14.0), 1.0)]), OBJECTIVE_BOARD), PackedStringArray(),
+        "tangent circles of different radii accepted")
+    var errors := ObjectiveRules.placement_errors(_objectives([_objective(&"a", Vector2(10.0, 10.0)),
+        _objective(&"b", Vector2(15.99, 10.0))]), OBJECTIVE_BOARD)
+    _check(errors.size() == 1 and errors[0].contains("control circles overlap"), "overlapping circles refused: %s" % [errors])
+    errors = ObjectiveRules.placement_errors(_objectives([_objective(&"a", Vector2(10.0, 10.0)),
+        _objective(&"b", Vector2(10.0, 10.0))]), OBJECTIVE_BOARD)
+    _check_eq(errors.size(), 1, "concentric circles refused: %s" % [errors])
+
+
+func test_objective_range_uses_the_whole_base() -> void:
+    var objective := _objective(&"a", Vector2(20.0, 20.0))
+    _check(ObjectiveRules.in_range(objective, Vector2(23.5, 20.0), 0.5), "base exactly touching the radius counts")
+    _check(ObjectiveRules.in_range(objective, Vector2(20.0, 16.5), 0.5), "touching from another direction")
+    _check(ObjectiveRules.in_range(objective, Vector2(23.3, 20.0), 0.5), "centre outside, part of the base inside")
+    _check(ObjectiveRules.in_range(objective, Vector2(20.0, 20.0), 0.5), "base on the centre")
+    _check(not ObjectiveRules.in_range(objective, Vector2(23.502, 20.0), 0.5), "base 0.002 beyond the radius: out")
+    _check(not ObjectiveRules.in_range(objective, Vector2(24.0, 20.0), 0.5), "base a half-unit beyond: out")
+    var diagonal := Vector2(20.0, 20.0) + Vector2(1.0, 1.0).normalized() * 4.0
+    _check(ObjectiveRules.in_range(objective, diagonal, 1.0), "a larger base touching diagonally counts")
+    # Through presence, with real models.
+    var battle := _battle_of([_squad_at(&"p1_a", P1, [Vector2(23.5, 20.0), Vector2(20.0, 23.3), Vector2(23.6, 18.0)])])
+    _check_eq(ObjectiveRules.presence(objective, battle), {P1: 2, P2: 0}, "touching and partly inside count; beyond does not")
+
+
+func test_objective_eligibility_by_morale() -> void:
+    var objective := _objective(&"a", Vector2(20.0, 20.0))
+    var steady := _squad_at(&"p1_s", P1, [Vector2(19.0, 20.0)])
+    var shaken := _squad_at(&"p1_h", P1, [Vector2(21.0, 20.0)])
+    var broken := _squad_at(&"p2_b", P2, [Vector2(20.0, 19.0), Vector2(20.0, 21.0)])
+    shaken.morale_status = SquadState.MoraleStatus.SHAKEN
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    _check(ObjectiveRules.is_eligible(steady), "Steady counts")
+    _check(ObjectiveRules.is_eligible(shaken), "Shaken counts")
+    _check(not ObjectiveRules.is_eligible(broken), "Broken does not")
+    var battle := _battle_of([steady, shaken, broken])
+    _check_eq(ObjectiveRules.presence(objective, battle), {P1: 2, P2: 0}, "the Broken squad's two models are not counted")
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.CONTROLLED, P1], "Player 1 controls it")
+    broken.morale_status = SquadState.MoraleStatus.STEADY
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.CONTESTED, TurnManager.NO_PLAYER],
+        "once it rallies, its models count again")
+    shaken.morale_restricted_this_turn = true
+    shaken.rally_attempted_this_turn = true
+    _check_eq(ObjectiveRules.presence(objective, battle), {P1: 2, P2: 2}, "regrouping or rallying does not disqualify")
+
+
+func test_objective_engaged_and_committed_squads_count() -> void:
+    var objective := _objective(&"a", Vector2(20.0, 20.0))
+    var a := _squad_at(&"p1_a", P1, [Vector2(19.5, 20.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(20.5, 20.0), Vector2(22.0, 20.0)])
+    var battle := _battle_of([a, x])
+    _check(EngagementRules.is_in_active_engagement(a, battle.get_squads()), "p1_a and p2_x are engaged")
+    _check_eq(ObjectiveRules.presence(objective, battle), {P1: 1, P2: 2}, "engaged squads count normally")
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.CONTROLLED, P2], "Player 2 controls it")
+    # Committed for the round, but no longer in contact.
+    var tracker := EngagementTracker.new()
+    tracker.commit([&"p1_a", &"p2_x"])
+    a.place_models({a.get_living_models()[0].model_id: Vector2(18.0, 20.0)})
+    _check(tracker.is_committed(&"p1_a") and not EngagementRules.is_in_active_engagement(a, battle.get_squads()),
+        "p1_a is committed this round but not in an active engagement")
+    _check_eq(ObjectiveRules.presence(objective, battle), {P1: 1, P2: 2}, "commitment changes nothing")
+
+
+func test_objective_presence_sums_squads_and_resolves_control() -> void:
+    var objective := _objective(&"a", Vector2(20.0, 20.0))
+    var a := _squad_at(&"p1_a", P1, [Vector2(18.0, 18.0)])
+    var b := _squad_at(&"p1_b", P1, [Vector2(18.0, 22.0), Vector2(19.5, 22.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(22.0, 18.0), Vector2(22.0, 19.5)])
+    var y := _squad_at(&"p2_y", P2, [Vector2(22.0, 22.0)])
+    var battle := _battle_of([a, b, x, y])
+    _check_eq(ObjectiveRules.presence(objective, battle), {P1: 3, P2: 3}, "each player's squads are summed")
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.CONTESTED, TurnManager.NO_PLAYER],
+        "equal presence: contested")
+    battle.remove_squad(&"p2_y")
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.CONTROLLED, P1], "a one-model margin controls")
+    battle.add_squad(y)
+    battle.remove_squad(&"p1_a")
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.CONTROLLED, P2], "the other way round")
+    var status := ObjectiveRules.resolve({P1: 0, P2: 0})
+    _check_eq([status.control, status.player], [ObjectiveRules.ControlState.UNCONTROLLED, TurnManager.NO_PLAYER],
+        "nobody present: uncontrolled")
+    _check_eq(ObjectiveRules.resolve({P1: 5, P2: 4}).player, P1, "5 to 4: Player 1")
+    _check_eq(ObjectiveRules.resolve({P1: 0, P2: 1}).player, P2, "0 to 1: Player 2")
+    _check_eq(ObjectiveRules.resolve({P1: 2, P2: 2}).control, ObjectiveRules.ControlState.CONTESTED, "2 to 2: contested")
+
+
+func test_objective_excludes_removed_models_and_squads() -> void:
+    var objective := _objective(&"a", Vector2(20.0, 20.0))
+    var a := _squad_at(&"p1_a", P1, [Vector2(19.0, 20.0), Vector2(20.0, 19.0)])
+    var x := _squad_at(&"p2_x", P2, [Vector2(21.5, 20.0)])
+    var battle := _battle_of([a, x])
+    _check_eq(ObjectiveRules.presence(objective, battle), {P1: 2, P2: 1}, "all present")
+    a.take_wound(a.get_living_models()[1].model_id)
+    _check_eq(ObjectiveRules.presence(objective, battle), {P1: 1, P2: 1}, "a removed model no longer counts")
+    _check_eq(_status(objective, battle)[0], ObjectiveRules.ControlState.CONTESTED, "now contested")
+    battle.remove_squad(&"p2_x")
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.CONTROLLED, P1],
+        "a squad removed from the battlefield no longer counts")
+    a.take_wound(a.get_living_models()[0].model_id)
+    _check(a.is_destroyed(), "p1_a destroyed (still listed)")
+    _check_eq(ObjectiveRules.presence(objective, battle), {P1: 0, P2: 0}, "a destroyed squad counts nothing")
+
+
+func test_objective_uncontrolled_when_everyone_leaves() -> void:
+    var objective := _objective(&"a", Vector2(20.0, 20.0))
+    var a := _squad_at(&"p1_a", P1, [Vector2(20.0, 20.0), Vector2(21.0, 21.0)])
+    var battle := _battle_of([a])
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.CONTROLLED, P1], "held while present")
+    var models := a.get_living_models()
+    a.place_models({models[0].model_id: Vector2(23.0, 20.0), models[1].model_id: Vector2(30.0, 20.0)})
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.CONTROLLED, P1], "one model still touching")
+    a.place_models({models[0].model_id: Vector2(26.0, 20.0)})
+    _check_eq(_status(objective, battle), [ObjectiveRules.ControlState.UNCONTROLLED, TurnManager.NO_PLAYER],
+        "no eligible model in range: uncontrolled at once, nothing remembered")
+
+
+func test_objectives_in_main_scene() -> void:
+    var main: Node = await _load_main()
+    _check(main.objective_errors.is_empty(), "the main scene's objectives are valid: %s" % [main.objective_errors])
+    var expected := [[&"objective_a", "A", Vector2(16.0, 24.0)], [&"objective_b", "B", Vector2(24.0, 16.0)],
+        [&"objective_c", "C", Vector2(32.0, 24.0)]]
+    var actual: Array = main.objectives.map(func(o: ObjectiveSetup) -> Array: return [o.objective_id, o.display_name, o.position])
+    _check_eq(actual, expected, "three objectives A, B and C")
+    _check(main.objectives.all(func(o: ObjectiveSetup) -> bool: return o.control_radius == 3.0), "each with radius 3.0")
+    for objective in main.objectives:
+        for placed in main.terrain.get_placed():
+            _check(not TerrainGeometry.swept_circle_overlaps(objective.position, objective.position,
+                objective.control_radius, placed.footprint, 0.0),
+                "%s clear of the %s footprint" % [objective.display_name, placed.piece.terrain_name])
+        for squad in main.battle.get_squads():
+            for model in squad.get_living_models():
+                _check(not ObjectiveRules.in_range(objective, model.position, model.get_base_radius()),
+                    "%s clear of %s's starting bases" % [objective.display_name, squad.squad_id])
+    # Drawn above the terrain, beneath the movement overlay and the squads.
+    var layer: ObjectiveLayer = main.get_node("GameBoard/ObjectiveLayer")
+    var order: Array = ["TerrainLayer", "ObjectiveLayer", "MovementOverlay", "Squads"].map(
+        func(n: String) -> int: return main.get_node("GameBoard/" + n).get_index())
+    _check(order[0] < order[1] and order[1] < order[2] and order[2] < order[3], "draw order: terrain, objectives, overlay, squads: %s" % [order])
+    _check_eq(layer.get_objectives(), main.objectives, "the layer shows the validated objectives")
+    var b: ObjectiveSetup = main.objectives[1]
+    _check_eq(ObjectiveLayer.colors_for(layer.displayed_status(b)), [SquadToken.NEUTRAL_COLOR] as Array[Color],
+        "B starts uncontrolled: neutral")
+    # The layer follows current positions: move Line Squad onto B, then a Raider.
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var raider: SquadState = main.battle.get_squad(&"p2_raider_squad")
+    line.board_position = Vector2(22.5, 16.0)
+    _check_eq(ObjectiveLayer.colors_for(layer.displayed_status(b)), [SquadToken.PLAYER_COLORS[P1]] as Array[Color],
+        "Line Squad on B: Player 1's colour")
+    var raiders := raider.get_living_models()
+    raider.place_models({raiders[0].model_id: Vector2(26.0, 14.0), raiders[1].model_id: Vector2(26.0, 16.0),
+        raiders[2].model_id: Vector2(26.0, 18.0)})
+    var line_models := line.get_living_models()
+    line.place_models({line_models[0].model_id: Vector2(22.0, 14.0), line_models[1].model_id: Vector2(22.0, 16.0),
+        line_models[2].model_id: Vector2(22.0, 18.0), line_models[3].model_id: Vector2(18.0, 16.0)})
+    _check_eq(ObjectiveRules.presence(b, main.battle), {P1: 3, P2: 3}, "three each on B")
+    _check_eq(ObjectiveLayer.colors_for(layer.displayed_status(b)),
+        [SquadToken.PLAYER_COLORS[P1], SquadToken.PLAYER_COLORS[P2]] as Array[Color], "contested: both colours")
+    main.queue_free()
+    await process_frame
+
+
+func test_invalid_objective_setup_rejected_in_main() -> void:
+    var main: Node = load("res://scenes/core/Main.tscn").instantiate()
+    main.objective_setups = _objectives([_objective(&"a", Vector2(16.0, 24.0)), _objective(&"a", Vector2(32.0, 24.0))])
+    print("        (the next error is expected)")
+    root.add_child(main)
+    await process_frame
+    _check_eq(main.objective_errors.size(), 1, "the duplicate id is reported: %s" % [main.objective_errors])
+    _check(main.objectives.is_empty(), "no objective is placed from an invalid setup")
+    _check(main.objective_layer.get_objectives().is_empty(), "and none is drawn")
+    _check_eq(main.turn_manager.turn_number, 0, "the game does not start")
+    _check(main.hud.order_feedback.text.begins_with("Invalid objective setup"), "the HUD says why: %s" % main.hud.order_feedback.text)
+    main.queue_free()
+    await process_frame
