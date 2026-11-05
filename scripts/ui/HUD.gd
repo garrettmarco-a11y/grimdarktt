@@ -239,7 +239,7 @@ func _on_attack_resolved(result: CombatResult) -> void:
     order_feedback.text = format_combat_result(result)
 
 
-func _on_shot_rejected(_firing: SquadState, _target: SquadState, result: ShootingRules.OrderResult) -> void:
+func _on_shot_rejected(_firing: SquadState, target: SquadState, result: ShootingRules.OrderResult) -> void:
     order_feedback.modulate = Color(1.0, 0.45, 0.4)
     match result:
         ShootingRules.OrderResult.NO_SQUAD:
@@ -258,6 +258,10 @@ func _on_shot_rejected(_firing: SquadState, _target: SquadState, result: Shootin
             order_feedback.text = "Morale: this squad cannot shoot this turn"
         ShootingRules.OrderResult.NO_VISIBLE_TARGET:
             order_feedback.text = "No model can see that squad"
+        ShootingRules.OrderResult.ENGAGED_TARGET:
+            order_feedback.text = "%s is engaged in combat: it cannot be shot at" % target.data.display_name
+        ShootingRules.OrderResult.NO_ENGAGEMENT_CONTEXT:
+            order_feedback.text = "%s is not on the battlefield" % target.data.display_name
 
 
 func _on_allocation_required(result: CombatResult, _wounds_left: int) -> void:
