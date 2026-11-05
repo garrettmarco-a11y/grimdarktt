@@ -7,12 +7,82 @@ extends SceneTree
 ##
 ## Every method whose name starts with "test_" is run. The process exits with
 ## code 0 when all checks pass and 1 when any check fails.
+##
+## Besides its checks, a test fails if, while it runs:
+##   - a GDScript runtime error occurs (which also ends the test early: GDScript
+##     abandons the function at the failing line), or
+##   - the number of other logged errors (push_error and engine errors) differs
+##     from its entry in EXPECTED_ERRORS (none if absent).
+## Errors are captured by a Logger registered with OS.add_logger, which Godot
+## calls synchronously as each error is logged.
 
 const P1 := TurnManager.PLAYER_ONE
 const P2 := TurnManager.PLAYER_TWO
 const Phase := TurnManager.Phase
 
+## Tests that deliberately trigger logged errors (push_error or engine errors),
+## and how many each must log. Any other test must log none. Runtime script
+## errors can never be expected.
+const EXPECTED_ERRORS := {
+    "test_activation_is_per_squad_and_guarded": 3,
+    "test_removal_during_activation": 2,
+    "test_squad_state_references_data_and_keeps_identity": 2,
+    "test_battle_state_add_and_remove": 2,
+    "test_model_states_built_from_data": 1,
+    "test_models_removed_at_zero_wounds": 1,
+    "test_footprint_overlap_validation": 7,
+    "test_narrow_footprint_overlap": 1,
+    "test_invalid_starting_layout_rejected_in_main": 2,
+    "test_procedure_phase_waits_for_its_procedure": 5,
+    "test_procedure_may_complete_synchronously": 1,
+    "test_tracker_charges_merges_and_locked_targets": 3,
+    "test_destroyed_and_resolved_squads_in_the_record": 1,
+    "test_allocation_queue_guards": 1,
+    "test_assault_fights_engagements_in_order_and_completes_the_phase": 1,
+    "test_required_procedures_are_checked": 1,
+    "test_validate_order_with_missing_or_inconsistent_battlefield_fails_explicitly": 4,
+    "test_unbound_shooting_controller_cannot_bypass_engagement": 1,
+}
+
 var _failures: Array[String] = []
+var _error_log := ErrorLog.new()
+
+
+## Records every error Godot logs (push_error, engine errors and GDScript
+## runtime errors), with where it happened.
+class ErrorLog extends Logger:
+    var entries: Array[Dictionary] = []
+    var _mutex := Mutex.new()
+
+    func _log_error(function: String, file: String, line: int, code: String, rationale: String, _editor_notify: bool,
+            error_type: int, script_backtraces: Array[ScriptBacktrace]) -> void:
+        var backtrace := ""
+        var where := "%s:%d in %s" % [file, line, function]
+        for trace in script_backtraces:
+            if not trace.is_empty():
+                backtrace += trace.format(8, 4)
+                if error_type != ERROR_TYPE_SCRIPT and trace.get_frame_count() > 0:
+                    # push_error and engine errors: report the script that called them.
+                    where = "%s:%d in %s" % [trace.get_frame_file(0), trace.get_frame_line(0), trace.get_frame_function(0)]
+        _mutex.lock()
+        entries.append({"type": error_type, "message": code if rationale.is_empty() else "%s (%s)" % [rationale, code],
+            "where": where, "backtrace": backtrace.rstrip("\n")})
+        _mutex.unlock()
+
+    func _log_message(_message: String, _error: bool) -> void:
+        pass
+
+    func count() -> int:
+        _mutex.lock()
+        var n := entries.size()
+        _mutex.unlock()
+        return n
+
+    func since(start: int) -> Array[Dictionary]:
+        _mutex.lock()
+        var found: Array[Dictionary] = entries.slice(start)
+        _mutex.unlock()
+        return found
 
 
 ## Dice that return a fixed sequence of rolls, for deterministic tests.
@@ -42,22 +112,28 @@ class CountingActivation extends ActivationController:
 
 
 func _initialize() -> void:
+    OS.add_logger(_error_log)
     _run_all.call_deferred()
 
 
 func _run_all() -> void:
     var failed_tests := 0
     var test_count := 0
+    var test_names := {}
+    var outside := _error_log.since(0)
     for method in get_method_list():
         var method_name: String = method["name"]
         if not method_name.begins_with("test_"):
             continue
         test_count += 1
+        test_names[method_name] = true
         var failures_before := _failures.size()
         var exhausted_before := ScriptedDice.exhausted_count
+        var errors_before := _error_log.count()
         await call(method_name)
         if ScriptedDice.exhausted_count != exhausted_before:
             _failures.append("ScriptedDice ran out of scripted rolls")
+        _check_logged_errors(method_name, _error_log.since(errors_before))
         if _failures.size() == failures_before:
             print("PASS  %s" % method_name)
         else:
@@ -66,9 +142,37 @@ func _run_all() -> void:
             for i in range(failures_before, _failures.size()):
                 print("        %s" % _failures[i])
 
+    var runner_problems := 0
+    for name in EXPECTED_ERRORS:
+        if not test_names.has(name):
+            runner_problems += 1
+            print("RUNNER  EXPECTED_ERRORS names %s, which is not a test" % name)
+    for entry in outside:
+        runner_problems += 1
+        print("RUNNER  error logged before any test ran: %s (%s)" % [entry.message, entry.where])
     print("")
     print("%d tests, %d failed" % [test_count, failed_tests])
-    quit(1 if failed_tests > 0 or test_count == 0 else 0)
+    quit(1 if failed_tests > 0 or runner_problems > 0 or test_count == 0 else 0)
+
+
+## Fails the current test for any runtime script error it caused, and for
+## logged errors beyond (or short of) what EXPECTED_ERRORS allows it.
+func _check_logged_errors(method_name: String, entries: Array[Dictionary]) -> void:
+    var logged: Array[Dictionary] = []
+    for entry in entries:
+        if entry.type == Logger.ERROR_TYPE_SCRIPT:
+            var report := "script error: %s\n          at %s" % [entry.message, entry.where]
+            if not entry.backtrace.is_empty():
+                report += "\n" + entry.backtrace
+            _failures.append(report)
+        elif entry.type == Logger.ERROR_TYPE_ERROR:
+            logged.append(entry)
+    var expected: int = EXPECTED_ERRORS.get(method_name, 0)
+    if logged.size() != expected:
+        var report := "expected %d logged error(s), got %d:" % [expected, logged.size()]
+        for entry in logged:
+            report += "\n          %s (%s)" % [entry.message, entry.where]
+        _failures.append(report)
 
 
 func _check(condition: bool, message: String) -> void:
