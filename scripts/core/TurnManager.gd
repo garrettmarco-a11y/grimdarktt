@@ -148,7 +148,12 @@ static func other_player(player: int) -> int:
     return PLAYER_TWO if player == PLAYER_ONE else PLAYER_ONE
 
 
+## Starts the game at round 1. Refused once the game is over: GAME_OVER is
+## terminal.
 func start_game() -> void:
+    if state == State.GAME_OVER:
+        push_error("TurnManager.start_game: the game is over")
+        return
     turn_number = 1
     current_phase = Phase.MOVEMENT
     priority_player = PLAYER_ONE

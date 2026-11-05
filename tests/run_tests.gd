@@ -43,7 +43,7 @@ const EXPECTED_ERRORS := {
     "test_validate_order_with_missing_or_inconsistent_battlefield_fails_explicitly": 4,
     "test_unbound_shooting_controller_cannot_bypass_engagement": 1,
     "test_invalid_objective_setup_rejected_in_main": 1,
-    "test_nothing_happens_after_game_end": 4,
+    "test_nothing_happens_after_game_end": 5,
     "test_invalid_round_limit_rejected_in_main": 2,
 }
 
@@ -6817,7 +6817,9 @@ func test_nothing_happens_after_game_end() -> void:
     var tm: TurnManager = f.tm
     _check_eq(f.activation.can_activate(p1), ActivationController.Result.NOT_IN_PHASE, "no squad can activate")
     _check_eq(f.activation.activate(p1), ActivationController.Result.NOT_IN_PHASE, "activation refused")
-    print("        (the next 4 errors are expected)")
+    print("        (the next 5 errors are expected)")
+    tm.start_game()
+    _check_eq([tm.state, tm.turn_number], [TurnManager.State.GAME_OVER, 1], "start_game cannot restart a finished game")
     _check(not tm.begin_phase(1, 1), "no phase can begin")
     _check_eq(tm.start_activation(), TurnManager.NO_PLAYER, "no activation can start")
     _check(not tm.end_activation(), "nor end")
@@ -6888,6 +6890,15 @@ func test_scoring_and_result_in_main_scene() -> void:
         "round 2's summary replaced round 1's, as nothing else was reported between them: %s" % main.hud.order_feedback.text)
     _check(main.hud.order_feedback.text.begins_with("Round 2 scoring"), "only the last checkpoint is shown")
     _check(main.objective_scoring.result != null and main.objective_scoring.result.winner == P1, "result kept for the UI")
+    var panel: ActivationPanel = main.hud.activation_panel
+    _check_eq([panel.player_label.text, panel.hint_label.text], ["Game over", "No further activations"],
+        "the activation panel no longer invites an activation")
+    _check(panel.action_button.disabled, "its button is disabled")
+    main.selection.select(line)
+    _check_eq(panel.hint_label.text, "No further activations", "even with one of the player's squads selected")
+    _check(panel.action_button.disabled and not panel.regroup_button.visible, "nothing to press")
+    panel.action_button.pressed.emit()
+    _check_eq(main.activation.active_squad, null, "and pressing it activates nothing")
     main.queue_free()
     await process_frame
 

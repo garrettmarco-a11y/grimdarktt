@@ -16,6 +16,7 @@ class_name ActivationPanel
 var _activation: ActivationController
 var _selection: SelectionManager
 var _morale: MoraleController
+var _game_over := false
 
 
 func bind(activation: ActivationController, selection: SelectionManager) -> void:
@@ -35,8 +36,23 @@ func bind_morale(morale: MoraleController) -> void:
     refresh()
 
 
+## The game has ended: the panel stops offering activations for good.
+func show_game_over() -> void:
+    _game_over = true
+    refresh()
+
+
 func refresh() -> void:
     if _activation == null:
+        return
+    if _game_over:
+        player_label.text = "Game over"
+        active_label.text = "Active: none"
+        activated_label.text = "Done: none"
+        regroup_button.visible = false
+        action_button.text = "Activate"
+        action_button.disabled = true
+        hint_label.text = "No further activations"
         return
     var player := _activation.get_active_player()
     player_label.text = "Player %d to activate" % player if player != TurnManager.NO_PLAYER else "No activations left"

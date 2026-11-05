@@ -22,6 +22,7 @@ var _feedback_before_scoring := ""
 func bind_turn_manager(turn_manager: TurnManager) -> void:
     turn_manager.phase_changed.connect(phase_banner.show_phase)
     turn_manager.game_ended.connect(phase_banner.show_game_over)
+    turn_manager.game_ended.connect(func(_turn: int) -> void: activation_panel.show_game_over())
 
 
 ## The banner's score line follows scoring checkpoints only. Each checkpoint
