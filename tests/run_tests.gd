@@ -1204,7 +1204,7 @@ func test_shooting_only_in_shooting_phase() -> void:
         "Shooting over: Morale, Charge, Assault and Consolidation have nothing to do; next round")
     f.activation.activate(f.battle.get_squad(&"p1_a"))
     _check_eq(f.shooting.order_shot(p1, p2), ShootingRules.OrderResult.WRONG_PHASE, "refused once Shooting is over")
-    _check_eq(ShootingRules.validate_order(p1, p2, Phase.MORALE, true), ShootingRules.OrderResult.WRONG_PHASE,
+    _check_eq(ShootingRules.validate_order(p1, p2, Phase.MORALE, true, f.battle), ShootingRules.OrderResult.WRONG_PHASE,
         "refused in Morale")
     _free_shooting_fixture(f)
 
@@ -2500,7 +2500,7 @@ func test_broken_squad_cannot_charge_or_shoot() -> void:
     _check(not MoraleRules.may_attack(broken), "Broken squads may not attack")
     _check_eq(ChargeRules.validate(broken, enemy, Phase.CHARGE, true, [broken, enemy], null), ChargeRules.Result.MORALE_RESTRICTED,
         "a charge is refused for a Broken squad")
-    _check_eq(ShootingRules.validate_order(broken, enemy, Phase.SHOOTING, true), ShootingRules.OrderResult.MORALE_RESTRICTED,
+    _check_eq(ShootingRules.validate_order(broken, enemy, Phase.SHOOTING, true, BattleState.new()), ShootingRules.OrderResult.MORALE_RESTRICTED,
         "shooting refused for a Broken squad")
 
 
@@ -5919,10 +5919,9 @@ func test_engaged_squad_ids_are_current_contact_groups() -> void:
 
 func test_shooting_validate_order_target_rules() -> void:
     var f := _engaged_shooting_fixture()
-    var squads: Array = f.battle.get_squads()
     var s: SquadState = f.battle.get_squad(&"p1_s")
     var check := func(target_id: StringName) -> ShootingRules.OrderResult:
-        return ShootingRules.validate_order(s, f.battle.get_squad(target_id), Phase.SHOOTING, true, squads)
+        return ShootingRules.validate_order(s, f.battle.get_squad(target_id), Phase.SHOOTING, true, f.battle)
     _check_eq(check.call(&"p1_f"), ShootingRules.OrderResult.OWN_SQUAD, "unengaged friendly squad refused")
     _check_eq(check.call(&"p1_e"), ShootingRules.OrderResult.OWN_SQUAD, "engaged friendly squad refused as friendly")
     _check_eq(check.call(&"p1_s"), ShootingRules.OrderResult.OWN_SQUAD, "itself refused")
@@ -5938,12 +5937,12 @@ func test_engaged_enemy_protected_even_where_not_touching() -> void:
     var e: SquadState = f.battle.get_squad(&"p2_e")
     var far: ModelState = e.get_living_models()[1]
     _check(not EngagementRules.model_in_enemy_contact(e, far, squads), "p2_e's second model touches nobody")
-    _check_eq(ShootingRules.validate_order(s, e, Phase.SHOOTING, true, squads), ShootingRules.OrderResult.ENGAGED_TARGET,
+    _check_eq(ShootingRules.validate_order(s, e, Phase.SHOOTING, true, f.battle), ShootingRules.OrderResult.ENGAGED_TARGET,
         "the whole squad is protected, not just its model in contact")
     # p2_x touches only p1_b; the shooter faces it, yet it is in the engagement.
     var x: SquadState = f.battle.get_squad(&"p2_x")
     _check(not EngagementRules.squads_in_contact(x, f.battle.get_squad(&"p1_c")), "p2_x is not in contact with p1_c")
-    _check_eq(ShootingRules.validate_order(s, x, Phase.SHOOTING, true, squads), ShootingRules.OrderResult.ENGAGED_TARGET,
+    _check_eq(ShootingRules.validate_order(s, x, Phase.SHOOTING, true, f.battle), ShootingRules.OrderResult.ENGAGED_TARGET,
         "a multi-squad engagement protects every enemy in it")
     _free_shooting_fixture(f)
 
@@ -5957,11 +5956,13 @@ func test_every_squad_of_a_connected_engagement_is_protected() -> void:
             group = found.squads
     _check_eq(_ids(group), ["p1_b", "p1_c", "p2_x", "p2_z"], "one connected engagement of four squads")
     var p2_s := _squad_at(&"p2_s", P2, [Vector2(40.0, 40.0)])
+    f.battle.add_squad(p2_s)
     for member in group:
-        var result := ShootingRules.validate_order(p2_s, member, Phase.SHOOTING, true, squads)
+        var result := ShootingRules.validate_order(p2_s, member, Phase.SHOOTING, true, f.battle)
         var expected := ShootingRules.OrderResult.OWN_SQUAD if member.get_player() == P2 \
             else ShootingRules.OrderResult.ENGAGED_TARGET
         _check_eq(result, expected, "%s protected from a Player 2 shooter" % member.squad_id)
+    f.battle.remove_squad(&"p2_s")
     var s: SquadState = f.battle.get_squad(&"p1_s")
     _check_eq(_ids(f.shooting.valid_targets(s)), ["p2_free"], "Player 1's only target is the unengaged enemy")
     _free_shooting_fixture(f)
@@ -5976,7 +5977,7 @@ func test_squad_leaving_engagement_becomes_targetable() -> void:
     e.place_models({models[0].model_id: Vector2(25.0, 15.0), models[1].model_id: Vector2(27.0, 15.0)})
     _check(not EngagementRules.is_in_active_engagement(e, f.battle.get_squads()), "no longer in contact")
     _check(e in f.shooting.valid_targets(s), "now a target again")
-    _check_eq(ShootingRules.validate_order(s, e, Phase.SHOOTING, true, f.battle.get_squads()),
+    _check_eq(ShootingRules.validate_order(s, e, Phase.SHOOTING, true, f.battle),
         ShootingRules.OrderResult.OK, "order accepted by the rules")
     _free_shooting_fixture(f)
 
@@ -6071,3 +6072,115 @@ func test_engaged_targets_not_offered_in_main_scene() -> void:
     _check(activation.is_active_squad(line), "activation kept")
     main.queue_free()
     await process_frame
+
+
+# --- Task 2.4.1: engagement context is required for shooting validation ---
+
+func test_validate_order_requires_engagement_context() -> void:
+    var info := {}
+    for method in ShootingRules.new().get_script().get_script_method_list():
+        if method.name == "validate_order":
+            info = method
+    _check(not info.is_empty(), "validate_order found")
+    var args: Array = info.get("args", [])
+    var names: Array = args.map(func(a): return a.name)
+    _check_eq(names, ["firing", "target", "phase", "firing_is_activated", "battle"], "it takes the battlefield")
+    _check_eq(args.back().class_name if not args.is_empty() else &"", &"BattleState",
+        "as the authoritative BattleState, not a caller-chosen squad list")
+    _check_eq(info.get("default_args", ["?"]), [], "no argument is optional: the battlefield cannot be left out")
+
+
+func test_validate_order_with_missing_or_inconsistent_battlefield_fails_explicitly() -> void:
+    var f := _engaged_shooting_fixture()
+    var s: SquadState = f.battle.get_squad(&"p1_s")
+    var engaged: SquadState = f.battle.get_squad(&"p2_e")
+    var free: SquadState = f.battle.get_squad(&"p2_free")
+    print("        (the next error is expected)")
+    _check_eq(ShootingRules.validate_order(s, engaged, Phase.SHOOTING, true, null),
+        ShootingRules.OrderResult.NO_ENGAGEMENT_CONTEXT, "no battlefield: refused, not treated as unengaged")
+    print("        (the next error is expected)")
+    _check_eq(ShootingRules.validate_order(s, free, Phase.SHOOTING, true, BattleState.new()),
+        ShootingRules.OrderResult.NO_ENGAGEMENT_CONTEXT, "target not on that battlefield: refused even for a free enemy")
+    # Same id, different object: the battlefield and the squads disagree.
+    var impostor := _squad_at(&"p2_free", P2, [Vector2(20.0, 10.0)])
+    print("        (the next error is expected)")
+    _check_eq(ShootingRules.validate_order(s, impostor, Phase.SHOOTING, true, f.battle),
+        ShootingRules.OrderResult.NO_ENGAGEMENT_CONTEXT, "inconsistent target: refused")
+    var stray := _squad_at(&"p1_stray", P1, [Vector2(5.0, 5.0)])
+    print("        (the next error is expected)")
+    _check_eq(ShootingRules.validate_order(stray, free, Phase.SHOOTING, true, f.battle),
+        ShootingRules.OrderResult.NO_ENGAGEMENT_CONTEXT, "firing squad not on the battlefield: refused")
+    _check_eq(ShootingRules.validate_order(s, f.battle.get_squad(&"p1_e"), Phase.SHOOTING, true, null),
+        ShootingRules.OrderResult.OWN_SQUAD, "refusal order kept: a friendly squad is OWN_SQUAD first")
+    _check_eq(ShootingRules.validate_order(s, engaged, Phase.SHOOTING, true, f.battle),
+        ShootingRules.OrderResult.ENGAGED_TARGET, "with the battlefield: engaged")
+    _check_eq(ShootingRules.validate_order(s, free, Phase.SHOOTING, true, f.battle),
+        ShootingRules.OrderResult.OK, "with the battlefield: free enemy allowed")
+    _free_shooting_fixture(f)
+
+
+func test_omitted_engagement_neighbour_cannot_unprotect_a_target() -> void:
+    # Regression: with a caller-chosen squad list, [shooter, p2_e] (leaving out
+    # p1_e, the friendly squad p2_e is fighting) made p2_e look unengaged and
+    # the order was accepted. The rules now read every squad from the
+    # battlefield itself, so the neighbour cannot be omitted.
+    var f := _engaged_shooting_fixture()
+    var s: SquadState = f.battle.get_squad(&"p1_s")
+    var e: SquadState = f.battle.get_squad(&"p2_e")
+    var partial: Array = [s, e]
+    _check(not EngagementRules.is_in_active_engagement(e, partial), "the partial list hides the engagement")
+    _check(EngagementRules.is_in_active_engagement(e, f.battle.get_squads()), "the battlefield shows it")
+    _check_eq(ShootingRules.validate_order(s, e, Phase.SHOOTING, true, f.battle),
+        ShootingRules.OrderResult.ENGAGED_TARGET, "the rules judge by the whole battlefield")
+    f.activation.activate(s)
+    _check_eq(f.shooting.order_shot(s, e), ShootingRules.OrderResult.ENGAGED_TARGET, "the controller refuses it")
+    _check(e not in f.shooting.valid_targets(s), "and does not offer it")
+    _check(f.activation.is_active_squad(s), "activation not spent")
+    _free_shooting_fixture(f)
+
+
+func test_unbound_shooting_controller_cannot_bypass_engagement() -> void:
+    var f := _engaged_shooting_fixture()
+    var s: SquadState = f.battle.get_squad(&"p1_s")
+    var tm: TurnManager = f.tm
+    var activation: ActivationController = f.activation
+    activation.activate(s)
+    # A controller bound to a different, empty battle has no engagement context
+    # for these squads: it must refuse, not judge them unengaged.
+    var other := ShootingController.new()
+    other.bind(tm, activation, BattleState.new())
+    other.dice = ScriptedDice.new([])
+    print("        (the next error is expected)")
+    _check_eq(other.order_shot(s, f.battle.get_squad(&"p2_e")), ShootingRules.OrderResult.NO_ENGAGEMENT_CONTEXT,
+        "refused explicitly")
+    _check(other.valid_targets(s).is_empty(), "offers nothing")
+    _check(activation.is_active_squad(s), "activation not spent")
+    other.free()
+    _free_shooting_fixture(f)
+
+
+func test_valid_targets_and_order_shot_agree() -> void:
+    var f := _engaged_shooting_fixture()
+    var s: SquadState = f.battle.get_squad(&"p1_s")
+    # p2_e is still committed for the round but is moved out of contact.
+    f.tracker.commit([&"p1_e", &"p2_e"])
+    var e: SquadState = f.battle.get_squad(&"p2_e")
+    var models := e.get_living_models()
+    e.place_models({models[0].model_id: Vector2(25.0, 15.0), models[1].model_id: Vector2(27.0, 15.0)})
+    f.activation.activate(s)
+    var offered := _ids(f.shooting.valid_targets(s))
+    _check_eq(offered, ["p2_e", "p2_free"], "offered: the free enemy and the committed-but-unengaged one")
+    var refused := []
+    for target in f.battle.get_squads():
+        if String(target.squad_id) in offered:
+            continue
+        var result: ShootingRules.OrderResult = f.shooting.order_shot(s, target)
+        _check(result != ShootingRules.OrderResult.OK, "%s not offered and refused" % target.squad_id)
+        refused.append(String(target.squad_id))
+    refused.sort()
+    _check_eq(refused, ["p1_b", "p1_c", "p1_e", "p1_f", "p1_s", "p2_x", "p2_z"], "every other squad refused")
+    _check(f.activation.is_active_squad(s), "refusals spent nothing")
+    f.shooting.dice = ScriptedDice.new([1])
+    _check_eq(f.shooting.order_shot(s, e), ShootingRules.OrderResult.OK, "an offered target is accepted")
+    _check(f.activation.has_activated(s), "and the shot resolves")
+    _free_shooting_fixture(f)

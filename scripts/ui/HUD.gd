@@ -260,6 +260,8 @@ func _on_shot_rejected(_firing: SquadState, target: SquadState, result: Shooting
             order_feedback.text = "No model can see that squad"
         ShootingRules.OrderResult.ENGAGED_TARGET:
             order_feedback.text = "%s is engaged in combat: it cannot be shot at" % target.data.display_name
+        ShootingRules.OrderResult.NO_ENGAGEMENT_CONTEXT:
+            order_feedback.text = "%s is not on the battlefield" % target.data.display_name
 
 
 func _on_allocation_required(result: CombatResult, _wounds_left: int) -> void:

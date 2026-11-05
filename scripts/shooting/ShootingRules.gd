@@ -20,18 +20,26 @@ class_name ShootingRules
 ##     the firer's Quality, one higher while Shaken, one higher again if the
 ##     target squad is in heavy cover.
 ##   - Morale may forbid shooting this turn (MoraleRules.may_attack).
+##   - Target legality is never judged without the engagement context: every
+##     validation takes the authoritative BattleState and finds engagements
+##     among all of its squads, so no squad can be left out. A missing battle,
+##     or a firing or target squad that is not that battle's squad of the same
+##     id, is an invariant failure: refused as NO_ENGAGEMENT_CONTEXT, with an
+##     error, rather than judged without the engagement check.
 
 enum OrderResult { OK, NO_SQUAD, NO_TARGET, WRONG_PHASE, NOT_ACTIVATED, OWN_SQUAD, ALLOCATION_PENDING, MORALE_RESTRICTED, NO_VISIBLE_TARGET,
-    ENGAGED_TARGET }
+    ENGAGED_TARGET, NO_ENGAGEMENT_CONTEXT }
 
 ## Tolerance for range comparisons, in board units.
 const EPSILON := 0.001
 
 
-## `squads` are the squads on the battlefield, used to find current
-## engagements; ShootingController always passes them.
+## Checks an order by `firing` to shoot `target`. `battle` (required) is the
+## authoritative battlefield: current engagements are found among all of its
+## squads (EngagementRules), and `firing` and `target` must be its squads, or
+## the order is refused with NO_ENGAGEMENT_CONTEXT.
 static func validate_order(firing: SquadState, target: SquadState, phase: TurnManager.Phase,
-        firing_is_activated: bool, squads: Array = []) -> OrderResult:
+        firing_is_activated: bool, battle: BattleState) -> OrderResult:
     if firing == null:
         return OrderResult.NO_SQUAD
     if target == null:
@@ -44,7 +52,14 @@ static func validate_order(firing: SquadState, target: SquadState, phase: TurnMa
         return OrderResult.MORALE_RESTRICTED
     if target.get_player() == firing.get_player():
         return OrderResult.OWN_SQUAD
-    if EngagementRules.is_in_active_engagement(target, squads):
+    if battle == null:
+        push_error("ShootingRules.validate_order: no battlefield to judge engagements by")
+        return OrderResult.NO_ENGAGEMENT_CONTEXT
+    for squad in [firing, target]:
+        if battle.get_squad(squad.squad_id) != squad:
+            push_error("ShootingRules.validate_order: %s is not a squad of this battlefield" % squad.squad_id)
+            return OrderResult.NO_ENGAGEMENT_CONTEXT
+    if EngagementRules.is_in_active_engagement(target, battle.get_squads()):
         return OrderResult.ENGAGED_TARGET
     return OrderResult.OK
 
