@@ -1,19 +1,26 @@
 extends Node
 class_name Main
 ## Application coordinator: builds the battle state from the starting squad
-## setups, wires the turn manager, activation, squad view, selection, movement,
-## shooting, charges, engagements, consolidation, morale and HUD together, and
-## starts the game.
+## setups, validates the scenario's fixed objectives, wires the turn manager,
+## activation, squad and objective views, selection, movement, shooting,
+## charges, engagements, consolidation, morale and HUD together, and starts the
+## game.
 
 ## Squads placed on the battlefield at the start of the game.
 @export var squad_setups: Array[SquadSetup] = []
 ## Terrain placed on the battlefield; static for the battle.
 @export var terrain_setups: Array[TerrainSetup] = []
+## Fixed objectives of the scenario; static for the battle.
+@export var objective_setups: Array[ObjectiveSetup] = []
 
 var battle := BattleState.new()
 var terrain: TerrainMap
 ## Why the starting squad layout was rejected; empty if it is legal.
 var layout_errors := PackedStringArray()
+## Why the objective setup was rejected; empty if it is valid.
+var objective_errors := PackedStringArray()
+## The scenario's objectives once validated (none if the setup was rejected).
+var objectives: Array[ObjectiveSetup] = []
 ## Required procedure phases left without a procedure; empty when complete.
 var procedure_errors := PackedStringArray()
 ## Shared by shooting and assault for the defender's casualty allocation.
@@ -29,6 +36,7 @@ var consolidation := ConsolidationController.new()
 
 @onready var game_board: GameBoard = $GameBoard
 @onready var terrain_layer: TerrainLayer = $GameBoard/TerrainLayer
+@onready var objective_layer: ObjectiveLayer = $GameBoard/ObjectiveLayer
 @onready var movement_overlay: MovementOverlay = $GameBoard/MovementOverlay
 @onready var squad_layer: SquadLayer = $GameBoard/Squads
 @onready var turn_manager: TurnManager = $TurnManager
@@ -45,6 +53,13 @@ func _ready() -> void:
     # TerrainMap and leaves the battlefield without terrain.
     terrain = TerrainMap.new(terrain_setups)
     terrain_layer.bind(terrain)
+    # Objectives are validated as a whole: an invalid setup places none of them
+    # and the game does not start.
+    objective_errors = ObjectiveRules.placement_errors(objective_setups, game_board.board_size, terrain)
+    for error in objective_errors:
+        push_error("Invalid objective setup: %s" % error)
+    if objective_errors.is_empty():
+        objectives = objective_setups.duplicate()
     # Starting positions are validated before the battle begins; an invalid
     # layout is rejected whole, never rearranged, and the game does not start.
     var squads: Array[SquadState] = []
@@ -57,6 +72,7 @@ func _ready() -> void:
         for state in squads:
             battle.add_squad(state)
     squad_layer.bind_battle(battle)
+    objective_layer.bind(objectives, battle)
     selection.bind_battle(battle)
     activation.bind(battle, turn_manager)
     movement.bind(battle, turn_manager, game_board.board_size)
@@ -113,6 +129,8 @@ func _ready() -> void:
         push_error(error)
     if not layout_errors.is_empty():
         hud.show_setup_error("Invalid starting layout: %s" % layout_errors[0])
+    elif not objective_errors.is_empty():
+        hud.show_setup_error("Invalid objective setup: %s" % objective_errors[0])
     elif not procedure_errors.is_empty():
         hud.show_setup_error(procedure_errors[0])
     else:
