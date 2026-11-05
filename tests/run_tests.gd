@@ -43,6 +43,8 @@ const EXPECTED_ERRORS := {
     "test_validate_order_with_missing_or_inconsistent_battlefield_fails_explicitly": 4,
     "test_unbound_shooting_controller_cannot_bypass_engagement": 1,
     "test_invalid_objective_setup_rejected_in_main": 1,
+    "test_nothing_happens_after_game_end": 4,
+    "test_invalid_round_limit_rejected_in_main": 2,
 }
 
 var _failures: Array[String] = []
@@ -6625,5 +6627,275 @@ func test_invalid_objective_setup_rejected_in_main() -> void:
     _check(main.objective_layer.get_objectives().is_empty(), "and none is drawn")
     _check_eq(main.turn_manager.turn_number, 0, "the game does not start")
     _check(main.hud.order_feedback.text.begins_with("Invalid objective setup"), "the HUD says why: %s" % main.hud.order_feedback.text)
+    main.queue_free()
+    await process_frame
+
+
+# --- Task 2.5.2: objective scoring and victory ---
+
+## The main scene's objectives: A (16, 24), B (24, 16), C (32, 24), radius 3.
+func _scenario_objectives() -> Array[ObjectiveSetup]:
+    return _objectives([_objective(&"objective_a", Vector2(16.0, 24.0), 3.0, "A"),
+        _objective(&"objective_b", Vector2(24.0, 16.0), 3.0, "B"),
+        _objective(&"objective_c", Vector2(32.0, 24.0), 3.0, "C")])
+
+
+func _points(score: VictoryRules.RoundScore) -> Array:
+    return [score.points[P1], score.points[P2]]
+
+
+func _totals(score: VictoryRules.RoundScore) -> Array:
+    return [score.totals[P1], score.totals[P2]]
+
+
+## A started game of `squads` with the scenario objectives, round-end scoring
+## and a round limit (no Assault or Consolidation procedures: those phases end
+## at once). Free with _free_scoring_fixture.
+func _scoring_fixture(squads: Array, round_limit: int) -> Dictionary:
+    var battle := _battle_of(squads)
+    var tm := TurnManager.new()
+    tm.round_limit = round_limit
+    var activation := ActivationController.new()
+    activation.bind(battle, tm)
+    var scoring := ObjectiveController.new()
+    var objectives := _scenario_objectives()
+    scoring.bind(tm, battle, objectives)
+    var log := {"scored": [], "ended": [], "turns": [], "phases": []}
+    scoring.round_scored.connect(func(score): log.scored.append(score))
+    tm.game_ended.connect(func(turn): log.ended.append(turn))
+    tm.turn_started.connect(func(turn): log.turns.append(turn))
+    tm.phase_changed.connect(func(phase, turn): log.phases.append([turn, phase]))
+    tm.start_game()
+    return {"battle": battle, "tm": tm, "activation": activation, "scoring": scoring, "objectives": objectives,
+        "log": log}
+
+
+func _free_scoring_fixture(f: Dictionary) -> void:
+    f.activation.free()
+    f.tm.free()
+
+
+## Completes phases (every squad activates and ends) until `rounds` more rounds
+## have finished or the game is over.
+func _play_rounds(activation: ActivationController, battle: BattleState, tm: TurnManager, rounds: int) -> void:
+    var target := tm.turn_number + rounds
+    var guard := 0
+    while not tm.is_game_over() and tm.turn_number < target and guard < 200:
+        _complete_phase(activation, battle, tm)
+        guard += 1
+
+
+func test_scoring_one_player_controls_all_three() -> void:
+    var battle := _battle_of([_squad_at(&"p1_a", P1, [Vector2(16.0, 24.0), Vector2(17.0, 24.0), Vector2(15.0, 24.0)]),
+        _squad_at(&"p1_b", P1, [Vector2(24.0, 16.0)]), _squad_at(&"p1_c", P1, [Vector2(32.0, 24.0)])])
+    var score := VictoryRules.score_checkpoint(_scenario_objectives(), battle, 1, VictoryRules.zero_scores())
+    _check_eq(_points(score), [3, 0], "Player 1 controls A, B and C: 3 VP")
+    _check_eq(_totals(score), [3, 0], "totals")
+    _check_eq(score.entries.map(func(e): return e.objective.display_name), ["A", "B", "C"], "each objective scored once, in order")
+    _check_eq(score.round, 1, "round recorded")
+
+
+func test_scoring_split_objectives() -> void:
+    var battle := _battle_of([_squad_at(&"p1_a", P1, [Vector2(16.0, 24.0)]),
+        _squad_at(&"p2_b", P2, [Vector2(24.0, 16.0), Vector2(25.0, 16.0)]), _squad_at(&"p2_c", P2, [Vector2(32.0, 24.0)])])
+    var score := VictoryRules.score_checkpoint(_scenario_objectives(), battle, 1, {P1: 4, P2: 1})
+    _check_eq(_points(score), [1, 2], "A to Player 1, B and C to Player 2")
+    _check_eq(_totals(score), [5, 3], "added to the previous totals")
+
+
+func test_scoring_contested_and_uncontrolled_award_nothing() -> void:
+    var broken := _squad_at(&"p2_c", P2, [Vector2(32.0, 24.0)])
+    broken.morale_status = SquadState.MoraleStatus.BROKEN
+    var battle := _battle_of([_squad_at(&"p1_b", P1, [Vector2(23.0, 16.0)]), _squad_at(&"p2_b", P2, [Vector2(25.0, 16.0)]),
+        broken])
+    var score := VictoryRules.score_checkpoint(_scenario_objectives(), battle, 1, VictoryRules.zero_scores())
+    var controls: Array = score.entries.map(func(e): return e.status.control)
+    _check_eq(controls, [ObjectiveRules.ControlState.UNCONTROLLED, ObjectiveRules.ControlState.CONTESTED,
+        ObjectiveRules.ControlState.UNCONTROLLED], "A empty, B contested, C held only by a Broken squad")
+    _check_eq(_points(score), [0, 0], "no points")
+
+
+func test_scores_accumulate_and_are_never_rewritten() -> void:
+    var p1 := _squad_at(&"p1_a", P1, [Vector2(16.0, 24.0)])
+    var p2 := _squad_at(&"p2_a", P2, [Vector2(40.0, 8.0)])
+    var f := _scoring_fixture([p1, p2], 5)
+    _play_rounds(f.activation, f.battle, f.tm, 1)
+    var scoring: ObjectiveController = f.scoring
+    _check_eq(scoring.history.size(), 1, "round 1 scored once")
+    _check_eq(_points(scoring.history[0]), [1, 0], "round 1: Player 1 holds A")
+    # Between checkpoints, Player 1 leaves A and Player 2 takes it.
+    p1.place_models({p1.get_living_models()[0].model_id: Vector2(8.0, 16.0)})
+    p2.place_models({p2.get_living_models()[0].model_id: Vector2(16.0, 24.0)})
+    _check_eq(scoring.scores, {P1: 1, P2: 0}, "the score holds until the next checkpoint")
+    _play_rounds(f.activation, f.battle, f.tm, 1)
+    _check_eq(_points(scoring.history[0]), [1, 0], "round 1's score is unchanged")
+    _check_eq(_totals(scoring.history[0]), [1, 0], "and so are its totals")
+    _check_eq(_points(scoring.history[1]), [0, 1], "round 2: Player 2 holds A")
+    _check_eq(scoring.scores, {P1: 1, P2: 1}, "1-1")
+    # Player 2 also takes B; rounds 3 and 4 give 2 each.
+    p2.place_models({p2.get_living_models()[0].model_id: Vector2(24.0, 16.0)})
+    var second := _squad_at(&"p2_b", P2, [Vector2(16.0, 24.0)])
+    f.battle.add_squad(second)
+    _play_rounds(f.activation, f.battle, f.tm, 2)
+    _check_eq(scoring.history.map(func(s): return _totals(s)), [[1, 0], [1, 1], [1, 3], [1, 5]],
+        "totals accumulate round by round")
+    _check_eq(f.log.scored.size(), 4, "one round_scored per round")
+    _free_scoring_fixture(f)
+
+
+func test_round_limit_ends_the_game_after_the_last_checkpoint() -> void:
+    var f := _scoring_fixture([_squad_at(&"p1_a", P1, [Vector2(16.0, 24.0)]), _squad_at(&"p2_c", P2, [Vector2(32.0, 24.0)]),
+        _squad_at(&"p2_b", P2, [Vector2(24.0, 16.0)])], 3)
+    var results := []
+    f.scoring.game_finished.connect(func(r): results.append(r))
+    _play_rounds(f.activation, f.battle, f.tm, 2)
+    _check(not f.tm.is_game_over(), "not over after 2 of 3 rounds")
+    _check_eq(f.tm.turn_number, 3, "round 3 under way")
+    _play_rounds(f.activation, f.battle, f.tm, 5)
+    _check(f.tm.is_game_over(), "over after round 3")
+    _check_eq([f.tm.turn_number, f.tm.current_phase], [3, Phase.CONSOLIDATION], "still at round 3's Consolidation")
+    _check_eq(f.log.ended, [3], "game_ended once, for round 3")
+    _check_eq(f.scoring.history.size(), 3, "three checkpoints: the last one before the game ends")
+    _check_eq(results.size(), 1, "one result")
+    var result: VictoryRules.GameResult = f.scoring.result
+    _check(result != null and result.winner == P2 and result.rounds == 3, "Player 2 wins (6-3) after 3 rounds")
+    _check_eq(result.scores if result else {}, {P1: 3, P2: 6}, "final scores")
+    await process_frame
+    await process_frame
+    _check_eq(f.log.turns, [1, 2, 3], "no round 4 ever starts, even on later frames")
+    _free_scoring_fixture(f)
+
+
+func test_final_result_winner_and_draw() -> void:
+    var result := VictoryRules.final_result({P1: 4, P2: 2}, 5)
+    _check_eq([result.winner, result.is_draw(), result.rounds], [P1, false, 5], "4-2: Player 1 wins")
+    result = VictoryRules.final_result({P1: 1, P2: 3}, 5)
+    _check_eq([result.winner, result.is_draw()], [P2, false], "1-3: Player 2 wins")
+    result = VictoryRules.final_result({P1: 3, P2: 3}, 5)
+    _check_eq([result.winner, result.is_draw()], [TurnManager.NO_PLAYER, true], "3-3: draw")
+    result = VictoryRules.final_result({P1: 0, P2: 0}, 5)
+    _check(result.is_draw(), "0-0: draw")
+    _check_eq(HUD.format_result(VictoryRules.final_result({P1: 4, P2: 2}, 5)), "Player 1 wins 4-2", "formatted win")
+    _check_eq(HUD.format_result(VictoryRules.final_result({P1: 1, P2: 3}, 5)), "Player 2 wins 1-3", "formatted loss")
+    _check_eq(HUD.format_result(VictoryRules.final_result({P1: 2, P2: 2}, 5)), "Draw 2-2", "formatted draw")
+
+
+func test_equal_final_scores_draw_in_play() -> void:
+    var f := _scoring_fixture([_squad_at(&"p1_a", P1, [Vector2(16.0, 24.0)]), _squad_at(&"p2_c", P2, [Vector2(32.0, 24.0)])], 2)
+    _play_rounds(f.activation, f.battle, f.tm, 5)
+    _check(f.tm.is_game_over(), "over after 2 rounds")
+    _check_eq(f.scoring.scores, {P1: 2, P2: 2}, "2-2")
+    _check(f.scoring.result != null and f.scoring.result.is_draw(), "a draw")
+    _free_scoring_fixture(f)
+
+
+func test_elimination_does_not_end_the_game_early() -> void:
+    var p1 := _squad_at(&"p1_a", P1, [Vector2(16.0, 24.0)])
+    var p2 := _squad_at(&"p2_c", P2, [Vector2(32.0, 24.0)])
+    var f := _scoring_fixture([p1, p2], 4)
+    _play_rounds(f.activation, f.battle, f.tm, 1)
+    _check_eq(f.scoring.scores, {P1: 1, P2: 1}, "1-1 after round 1")
+    f.battle.remove_squad(&"p2_c")
+    _check(f.battle.get_squads().all(func(s): return s.get_player() == P1), "Player 2 has no squads left")
+    _play_rounds(f.activation, f.battle, f.tm, 1)
+    _check(not f.tm.is_game_over(), "the game goes on")
+    _check_eq(f.tm.turn_number, 3, "round 3 begins")
+    _play_rounds(f.activation, f.battle, f.tm, 5)
+    _check_eq(f.log.ended, [4], "it ends only at the round limit")
+    _check_eq(f.scoring.history.size(), 4, "every round scored")
+    _check_eq(f.scoring.scores, {P1: 4, P2: 1}, "Player 1 keeps scoring A")
+    _check_eq(f.scoring.result.winner if f.scoring.result else -1, P1, "and wins on score")
+    _free_scoring_fixture(f)
+
+
+func test_nothing_happens_after_game_end() -> void:
+    var p1 := _squad_at(&"p1_a", P1, [Vector2(16.0, 24.0)])
+    var f := _scoring_fixture([p1, _squad_at(&"p2_c", P2, [Vector2(32.0, 24.0)])], 1)
+    _play_rounds(f.activation, f.battle, f.tm, 5)
+    _check(f.tm.is_game_over(), "over after round 1")
+    var phases_before: int = f.log.phases.size()
+    var tm: TurnManager = f.tm
+    _check_eq(f.activation.can_activate(p1), ActivationController.Result.NOT_IN_PHASE, "no squad can activate")
+    _check_eq(f.activation.activate(p1), ActivationController.Result.NOT_IN_PHASE, "activation refused")
+    print("        (the next 4 errors are expected)")
+    _check(not tm.begin_phase(1, 1), "no phase can begin")
+    _check_eq(tm.start_activation(), TurnManager.NO_PLAYER, "no activation can start")
+    _check(not tm.end_activation(), "nor end")
+    _check(not tm.complete_procedure_phase(Phase.CONSOLIDATION), "the last procedure cannot be completed again")
+    _complete_phase(f.activation, f.battle, tm)
+    await process_frame
+    await process_frame
+    _check_eq(f.log.phases.size(), phases_before, "no phase change after the end")
+    _check_eq(f.log.turns, [1], "no further round")
+    _check_eq(f.scoring.history.size(), 1, "no further scoring")
+    _check(tm.is_game_over() and tm.state == TurnManager.State.GAME_OVER, "still over")
+    _free_scoring_fixture(f)
+
+
+func test_round_limit_validation() -> void:
+    for limit in [1, 5, 12]:
+        _check_eq(VictoryRules.round_limit_errors(limit), PackedStringArray(), "%d rounds accepted" % limit)
+    for limit in [0, -1, -5]:
+        var errors := VictoryRules.round_limit_errors(limit)
+        _check(errors.size() == 1 and errors[0].contains("positive integer"), "%d refused: %s" % [limit, errors])
+
+
+func test_invalid_round_limit_rejected_in_main() -> void:
+    for limit in [0, -2]:
+        var main: Node = load("res://scenes/core/Main.tscn").instantiate()
+        main.round_limit = limit
+        print("        (the next error is expected)")
+        root.add_child(main)
+        await process_frame
+        _check_eq(main.round_limit_errors.size(), 1, "round limit %d reported: %s" % [limit, main.round_limit_errors])
+        _check_eq(main.turn_manager.turn_number, 0, "round limit %d: the game does not start" % limit)
+        _check(main.hud.order_feedback.text.begins_with("Invalid round limit"), "the HUD says why")
+        main.queue_free()
+        await process_frame
+
+
+func test_scoring_and_result_in_main_scene() -> void:
+    var main: Node = load("res://scenes/core/Main.tscn").instantiate()
+    main.round_limit = 2
+    root.add_child(main)
+    await process_frame
+    var tm: TurnManager = main.turn_manager
+    var banner: PhaseBanner = main.hud.phase_banner
+    _check_eq(tm.round_limit, 2, "the scenario's round limit reaches the turn manager")
+    _check_eq(banner.score_label.text, "VP  Player 1: 0  -  Player 2: 0   (2 rounds)", "initial score")
+    var line: SquadState = main.battle.get_squad(&"p1_line_squad")
+    var a: ObjectiveSetup = main.objectives[0]
+    line.board_position = Vector2(16.0, 23.0)
+    _check_eq(ObjectiveLayer.colors_for(main.objective_layer.displayed_status(a)), [SquadToken.PLAYER_COLORS[P1]] as Array[Color],
+        "the live marker shows Player 1 on A at once")
+    _check_eq(banner.score_label.text, "VP  Player 1: 0  -  Player 2: 0   (2 rounds)", "but the score waits for the checkpoint")
+    _play_rounds(main.activation, main.battle, tm, 1)
+    _check_eq(tm.turn_number, 2, "round 2")
+    _check_eq(banner.score_label.text, "VP after round 1/2  Player 1: 1  -  Player 2: 0", "scored after round 1")
+    _check(main.hud.order_feedback.text.contains("Round 1 scoring: A Player 1 +1, B uncontrolled, C uncontrolled"),
+        "checkpoint summary: %s" % main.hud.order_feedback.text)
+    line.board_position = Vector2(8.0, 16.0)
+    _check_eq(ObjectiveLayer.colors_for(main.objective_layer.displayed_status(a)), [SquadToken.NEUTRAL_COLOR] as Array[Color],
+        "the live marker follows Player 1 leaving A")
+    _check_eq(banner.score_label.text, "VP after round 1/2  Player 1: 1  -  Player 2: 0", "the score does not")
+    _play_rounds(main.activation, main.battle, tm, 1)
+    _check(tm.is_game_over(), "over after round 2")
+    _check_eq(main.objective_scoring.scores, {P1: 1, P2: 0}, "1-0")
+    _check_eq(banner.label.text, "Turn 2 - Game over", "the banner says the game is over")
+    _check_eq(banner.score_label.text, "Final after 2 rounds: Player 1 wins 1-0", "final result and scores")
+    _check(main.hud.order_feedback.text.ends_with("Game over: Player 1 wins 1-0"), "result in the feedback too")
+    _check(not main.hud.order_feedback.text.contains("Round 1 scoring"),
+        "round 2's summary replaced round 1's, as nothing else was reported between them: %s" % main.hud.order_feedback.text)
+    _check(main.hud.order_feedback.text.begins_with("Round 2 scoring"), "only the last checkpoint is shown")
+    _check(main.objective_scoring.result != null and main.objective_scoring.result.winner == P1, "result kept for the UI")
+    main.queue_free()
+    await process_frame
+
+
+func test_main_scene_defaults_to_five_rounds() -> void:
+    var main: Node = await _load_main()
+    _check_eq(main.round_limit, 5, "the scenario's round limit is 5")
+    _check_eq(main.turn_manager.round_limit, 5, "and the turn manager uses it")
+    _check(main.round_limit_errors.is_empty(), "valid")
     main.queue_free()
     await process_frame

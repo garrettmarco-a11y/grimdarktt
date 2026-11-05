@@ -1,8 +1,8 @@
 extends CanvasLayer
 class_name HUD
 ## Displays game state. Reads from the turn manager, selection, activation,
-## movement, shooting, charge, engagement, consolidation and morale controllers
-## and the casualty allocator through signals only.
+## movement, shooting, charge, engagement, consolidation and morale controllers,
+## the casualty allocator and the objective scoring through signals only.
 
 @onready var phase_banner: PhaseBanner = $PhaseBanner
 @onready var squad_info_panel: SquadInfoPanel = $SquadInfoPanel
@@ -13,10 +13,64 @@ class_name HUD
 var _movement: MovementController
 ## Assault-phase target declarations; created when engagements are bound.
 var target_panel: TargetPanel
+## The order feedback as the last scoring checkpoint left it, and what it showed
+## before that checkpoint's summary was added.
+var _scoring_feedback := ""
+var _feedback_before_scoring := ""
 
 
 func bind_turn_manager(turn_manager: TurnManager) -> void:
     turn_manager.phase_changed.connect(phase_banner.show_phase)
+    turn_manager.game_ended.connect(phase_banner.show_game_over)
+
+
+## The banner's score line follows scoring checkpoints only. Each checkpoint
+## and the final result are also added under the order feedback's last message
+## (like the consolidation summary), so the round's last result stays visible.
+## A checkpoint replaces the previous checkpoint's summary if nothing else has
+## been reported since, so summaries never pile up.
+func bind_objective_scoring(scoring: ObjectiveController, round_limit: int) -> void:
+    phase_banner.show_initial_score(round_limit)
+    scoring.round_scored.connect(func(score: VictoryRules.RoundScore) -> void:
+        phase_banner.show_score(score, round_limit)
+        if order_feedback.text != _scoring_feedback:
+            _feedback_before_scoring = order_feedback.text
+        _scoring_feedback = _joined(_feedback_before_scoring, format_round_score(score))
+        order_feedback.modulate = Color.WHITE
+        order_feedback.text = _scoring_feedback)
+    scoring.game_finished.connect(func(result: VictoryRules.GameResult) -> void:
+        phase_banner.show_result(result)
+        order_feedback.modulate = Color.WHITE
+        order_feedback.text = _joined(order_feedback.text, "Game over: %s" % format_result(result)))
+
+
+static func _joined(before: String, text: String) -> String:
+    return text if before.is_empty() else "%s\n\n%s" % [before, text]
+
+
+## "Round 2 scoring: A Player 1 +1, B contested, C uncontrolled" and the totals.
+static func format_round_score(score: VictoryRules.RoundScore) -> String:
+    var parts := PackedStringArray()
+    for entry in score.entries:
+        var status: ObjectiveRules.Status = entry.status
+        var outcome := "uncontrolled"
+        if status.control == ObjectiveRules.ControlState.CONTESTED:
+            outcome = "contested"
+        elif status.control == ObjectiveRules.ControlState.CONTROLLED:
+            outcome = "Player %d +%d" % [status.player, VictoryRules.POINTS_PER_OBJECTIVE]
+        parts.append("%s %s" % [entry.objective.display_name, outcome])
+    return "Round %d scoring: %s\nVP: Player 1 %d, Player 2 %d" % [score.round,
+        ", ".join(parts) if not parts.is_empty() else "no objectives",
+        score.totals[TurnManager.PLAYER_ONE], score.totals[TurnManager.PLAYER_TWO]]
+
+
+## "Player 1 wins 4-2" or "Draw 3-3" (Player 1's score first).
+static func format_result(result: VictoryRules.GameResult) -> String:
+    var p1: int = result.scores.get(TurnManager.PLAYER_ONE, 0)
+    var p2: int = result.scores.get(TurnManager.PLAYER_TWO, 0)
+    if result.is_draw():
+        return "Draw %d-%d" % [p1, p2]
+    return "Player %d wins %d-%d" % [result.winner, p1, p2]
 
 
 func bind_selection(selection: SelectionManager) -> void:

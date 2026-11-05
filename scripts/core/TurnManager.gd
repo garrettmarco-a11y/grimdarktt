@@ -40,6 +40,10 @@ class_name TurnManager
 ##     start is deferred to the next frame, so a stretch of rounds in which
 ##     nobody can act (e.g. every squad locked in combat with no wound landing)
 ##     never piles up on the call stack.
+##   - The game lasts `round_limit` rounds (0: no limit). The last round's
+##     Consolidation ends as usual, phase_ended is emitted (round-end scoring
+##     listens to it), and then the game is over: state GAME_OVER, game_ended
+##     is emitted, and no further round, phase or activation can begin.
 
 signal phase_changed(phase: Phase, turn: int)
 signal phase_started(phase: Phase, turn: int, priority_player: int)
@@ -47,9 +51,11 @@ signal phase_ended(phase: Phase, turn: int)
 signal turn_started(turn: int)
 signal activation_started(player: int, phase: Phase)
 signal activation_ended(player: int, phase: Phase)
+## The game is over: `turn`, the last round, has ended (after its phase_ended).
+signal game_ended(turn: int)
 
 enum Phase { MOVEMENT, SHOOTING, MORALE, CHARGE, ASSAULT, CONSOLIDATION }
-enum State { NOT_STARTED, AWAITING_PHASE_START, IN_PHASE, ACTIVATION_IN_PROGRESS, PROCEDURE_IN_PROGRESS }
+enum State { NOT_STARTED, AWAITING_PHASE_START, IN_PHASE, ACTIVATION_IN_PROGRESS, PROCEDURE_IN_PROGRESS, GAME_OVER }
 
 ## Phases resolved by a procedure rather than by squad activations.
 const PROCEDURE_PHASES: Array[Phase] = [Phase.ASSAULT, Phase.CONSOLIDATION]
@@ -66,6 +72,9 @@ var priority_player: int = PLAYER_ONE
 ## Player whose squad acts next (or is acting now); NO_PLAYER outside a phase.
 var active_player: int = NO_PLAYER
 var state: State = State.NOT_STARTED
+## Rounds the game lasts; the game ends after the last one's Consolidation.
+## 0 means no limit. Set by the scenario before start_game().
+var round_limit := 0
 
 var _remaining := {PLAYER_ONE: 0, PLAYER_TWO: 0}
 ## Phase -> Callable started when that procedure phase begins.
@@ -129,6 +138,10 @@ func complete_procedure_phase(phase: Phase) -> bool:
         return false
     _end_phase()
     return true
+
+
+func is_game_over() -> bool:
+    return state == State.GAME_OVER
 
 
 static func other_player(player: int) -> int:
@@ -252,7 +265,11 @@ func _end_phase() -> void:
     state = State.AWAITING_PHASE_START
     phase_ended.emit(ended_phase, turn_number)
 
-    if ended_phase == LAST_PHASE and _rounds_in_chain >= 1:
+    if ended_phase == LAST_PHASE and round_limit > 0 and turn_number >= round_limit:
+        # The last round is over (its round-end scoring ran in phase_ended).
+        state = State.GAME_OVER
+        game_ended.emit(turn_number)
+    elif ended_phase == LAST_PHASE and _rounds_in_chain >= 1:
         # A round already began in this chain: start the next one on the next
         # frame. (Not call_deferred: a deferred call queued while deferred
         # calls are being flushed runs in the same flush.)

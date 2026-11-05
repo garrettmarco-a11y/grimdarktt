@@ -12,6 +12,9 @@ class_name Main
 @export var terrain_setups: Array[TerrainSetup] = []
 ## Fixed objectives of the scenario; static for the battle.
 @export var objective_setups: Array[ObjectiveSetup] = []
+## Rounds the battle lasts: objectives are scored at the end of every round's
+## Consolidation phase, and the game ends after the last round's.
+@export var round_limit := 5
 
 var battle := BattleState.new()
 var terrain: TerrainMap
@@ -21,6 +24,10 @@ var layout_errors := PackedStringArray()
 var objective_errors := PackedStringArray()
 ## The scenario's objectives once validated (none if the setup was rejected).
 var objectives: Array[ObjectiveSetup] = []
+## Why the round limit was rejected; empty if it is valid.
+var round_limit_errors := PackedStringArray()
+## Round-end objective scoring and the game result.
+var objective_scoring := ObjectiveController.new()
 ## Required procedure phases left without a procedure; empty when complete.
 var procedure_errors := PackedStringArray()
 ## Shared by shooting and assault for the defender's casualty allocation.
@@ -60,6 +67,9 @@ func _ready() -> void:
         push_error("Invalid objective setup: %s" % error)
     if objective_errors.is_empty():
         objectives = objective_setups.duplicate()
+    round_limit_errors = VictoryRules.round_limit_errors(round_limit)
+    for error in round_limit_errors:
+        push_error("Invalid round limit: %s" % error)
     # Starting positions are validated before the battle begins; an invalid
     # layout is rejected whole, never rearranged, and the game does not start.
     var squads: Array[SquadState] = []
@@ -98,6 +108,8 @@ func _ready() -> void:
     add_child(consolidation)
     consolidation.bind(turn_manager, battle, engagements, engagement, game_board.board_size)
     consolidation.terrain = terrain
+    turn_manager.round_limit = round_limit
+    objective_scoring.bind(turn_manager, battle, objectives)
     hud.bind_turn_manager(turn_manager)
     hud.bind_terrain(terrain)
     hud.bind_selection(selection)
@@ -109,6 +121,7 @@ func _ready() -> void:
     hud.bind_charge(charge)
     hud.bind_engagements(engagement)
     hud.bind_consolidation(consolidation)
+    hud.bind_objective_scoring(objective_scoring, round_limit)
     squad_layer.squad_clicked.connect(selection.select)
     squad_layer.empty_space_clicked.connect(selection.clear_selection)
     squad_layer.destination_clicked.connect(_on_destination_clicked)
@@ -131,6 +144,8 @@ func _ready() -> void:
         hud.show_setup_error("Invalid starting layout: %s" % layout_errors[0])
     elif not objective_errors.is_empty():
         hud.show_setup_error("Invalid objective setup: %s" % objective_errors[0])
+    elif not round_limit_errors.is_empty():
+        hud.show_setup_error("Invalid round limit: %s" % round_limit_errors[0])
     elif not procedure_errors.is_empty():
         hud.show_setup_error(procedure_errors[0])
     else:
